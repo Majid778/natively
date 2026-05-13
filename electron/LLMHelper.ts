@@ -15,15 +15,17 @@ import {
 import { deepVariableReplacer, getByPath, injectImageIntoMessages } from './utils/curlUtils';
 import curl2Json from "@bany/curl-to-json";
 import { CustomProvider, CurlProvider } from './services/CredentialsManager';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import axios from 'axios';
 import { createProviderRateLimiters, RateLimiter } from './services/RateLimiter';
-const execAsync = promisify(exec);
-
-interface OllamaResponse {
-  response: string
-  done: boolean
+interface RealtimeMode {
+  id: string;
+  name: string;
+  prompt: string;
+  referenceFiles?: Array<{
+    id: string;
+    name: string;
+    text?: string;
+  }>;
 }
 
 // Model constant for Gemini 3 Flash
@@ -47,18 +49,14 @@ export class LLMHelper {
   private groqApiKey: string | null = null
   private openaiApiKey: string | null = null
   private claudeApiKey: string | null = null
-  private useOllama: boolean = false
-  private ollamaModel: string = "llama3.2"
-  private ollamaUrl: string = "http://localhost:11434"
-  private ollamaStartedByApp: boolean = false;
   private geminiModel: string = GEMINI_FLASH_MODEL
   private customProvider: CustomProvider | null = null;
   private activeCurlProvider: CurlProvider | null = null;
   private groqFastTextMode: boolean = false;
-  private knowledgeOrchestrator: any = null;
+  private realtimeModes: RealtimeMode[] = [];
+  private activeRealtimeModeId: string | null = null;
   private aiResponseLanguage: string = 'English';
   private sttLanguage: string = 'english-us';
-  private nativelyKey: string | null = null;
 
   // Rate limiters per provider to prevent 429 errors on free tiers
   private rateLimiters: ReturnType<typeof createProviderRateLimiters>;
@@ -66,8 +64,7 @@ export class LLMHelper {
   // Self-improving model version manager for vision analysis
   private modelVersionManager: ModelVersionManager;
 
-  constructor(apiKey?: string, useOllama: boolean = false, ollamaModel?: string, ollamaUrl?: string, groqApiKey?: string, openaiApiKey?: string, claudeApiKey?: string) {
-    this.useOllama = useOllama
+  constructor(apiKey?: string, groqApiKey?: string, openaiApiKey?: string, claudeApiKey?: string) {
 
     // Initialize rate limiters
     this.rateLimiters = createProviderRateLimiters();
@@ -95,15 +92,7 @@ export class LLMHelper {
       this.claudeClient = new Anthropic({ apiKey: claudeApiKey })
       console.log(`[LLMHelper] Claude client initialized with model: ${CLAUDE_MODEL}`)
     }
-
-    if (useOllama) {
-      this.ollamaUrl = ollamaUrl || "http://localhost:11434"
-      this.ollamaModel = ollamaModel || "gemma:latest" // Default fallback
-      // console.log(`[LLMHelper] Using Ollama with model: ${this.ollamaModel}`)
-
-      // Auto-detect and use first available model if specified model doesn't exist
-      this.initializeOllamaModel()
-    } else if (apiKey) {
+    if (apiKey) {
       this.apiKey = apiKey
       // Initialize with v1alpha API version for Gemini 3 support
       this.client = new GoogleGenAI({
@@ -142,14 +131,6 @@ export class LLMHelper {
     console.log("[LLMHelper] Claude API Key updated.");
   }
 
-  public setNativelyKey(key: string | null): void {
-    this.nativelyKey = key || null;
-    console.log(`[LLMHelper] Natively key ${key ? 'set' : 'cleared'}`);
-  }
-
-  private hasNatively(): boolean {
-    return !!this.nativelyKey;
-  }
 
   /**
    * Initialize the self-improving model version manager.
@@ -176,7 +157,6 @@ export class LLMHelper {
     this.groqApiKey = null;
     this.openaiApiKey = null;
     this.claudeApiKey = null;
-    this.nativelyKey = null;
     this.client = null;
     this.groqClient = null;
     this.openaiClient = null;
@@ -231,27 +211,28 @@ export class LLMHelper {
     if (modelId === 'claude') targetModelId = CLAUDE_MODEL;
     if (modelId === 'llama') targetModelId = GROQ_MODEL;
 
-    if (targetModelId.startsWith('ollama-')) {
-      this.useOllama = true;
-      this.ollamaModel = targetModelId.replace('ollama-', '');
-      this.customProvider = null;
-      this.activeCurlProvider = null;
-      console.log(`[LLMHelper] Switched to Ollama: ${this.ollamaModel}`);
-      return;
-    }
-
     const custom = customProviders.find(p => p.id === targetModelId);
     if (custom) {
-      this.useOllama = false;
-      this.customProvider = custom;
-      this.activeCurlProvider = null;
-      console.log(`[LLMHelper] Switched to Custom Provider: ${custom.name}`);
+      this.currentModelId = targetModelId;
+
+      // OpenRouter-style presets are saved as CurlProvider (with responsePath).
+      // Route those through the dedicated cURL pipeline so response extraction
+      // is deterministic and consistent with the selected model.
+      if (typeof (custom as any).responsePath === "string") {
+        this.activeCurlProvider = custom as CurlProvider;
+        this.customProvider = null;
+        console.log(`[LLMHelper] Switched to cURL Provider: ${custom.name}`);
+      } else {
+        this.customProvider = custom as CustomProvider;
+        this.activeCurlProvider = null;
+        console.log(`[LLMHelper] Switched to Custom Provider: ${custom.name}`);
+      }
       return;
     }
 
     // Standard Cloud Models
-    this.useOllama = false;
     this.customProvider = null;
+    this.activeCurlProvider = null;
     this.currentModelId = targetModelId;
 
     // Update specific model props if needed
@@ -262,7 +243,6 @@ export class LLMHelper {
   }
 
   public switchToCurl(provider: CurlProvider) {
-    this.useOllama = false;
     this.customProvider = null;
     this.activeCurlProvider = provider;
     console.log(`[LLMHelper] Switched to cURL provider: ${provider.name}`);
@@ -274,89 +254,6 @@ export class LLMHelper {
     // Remove any leading/trailing whitespace
     text = text.trim();
     return text;
-  }
-
-  private async callOllama(prompt: string, imagePath?: string): Promise<string> {
-    try {
-      // Build optional images array — Ollama multimodal API accepts raw base64 strings (no data-URL prefix)
-      let images: string[] | undefined;
-      if (imagePath) {
-        try {
-          const imageData = await fs.promises.readFile(imagePath);
-          images = [imageData.toString("base64")];
-        } catch (e) {
-          console.warn("[LLMHelper] callOllama: failed to read image, sending text only:", e);
-        }
-      }
-
-      const response = await fetch(`${this.ollamaUrl}/api/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.ollamaModel,
-          prompt: prompt,
-          stream: false,
-          ...(images ? { images } : {}),
-          options: {
-            temperature: 0.7,
-            top_p: 0.9,
-          }
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error(`Ollama API error: ${response.status} ${response.statusText}`)
-      }
-
-      const data: OllamaResponse = await response.json()
-      return data.response
-    } catch (error: any) {
-      // console.error("[LLMHelper] Error calling Ollama:", error)
-      throw new Error(`Failed to connect to Ollama: ${error.message}. Make sure Ollama is running on ${this.ollamaUrl}`)
-    }
-  }
-
-  private async checkOllamaAvailable(): Promise<boolean> {
-    try {
-      const response = await fetch(`${this.ollamaUrl}/api/tags`)
-      return response.ok
-    } catch {
-      return false
-    }
-  }
-
-  private async initializeOllamaModel(): Promise<void> {
-    try {
-      const availableModels = await this.getOllamaModels()
-      if (availableModels.length === 0) {
-        // console.warn("[LLMHelper] No Ollama models found")
-        return
-      }
-
-      // Check if current model exists, if not use the first available
-      if (!availableModels.includes(this.ollamaModel)) {
-        this.ollamaModel = availableModels[0]
-        // console.log(`[LLMHelper] Auto-selected first available model: ${this.ollamaModel}`)
-      }
-
-      // Test the selected model works
-      await this.callOllama("Hello")
-      // console.log(`[LLMHelper] Successfully initialized with model: ${this.ollamaModel}`)
-    } catch (error: any) {
-      // console.error(`[LLMHelper] Failed to initialize Ollama model: ${error.message}`)
-      // Try to use first available model as fallback
-      try {
-        const models = await this.getOllamaModels()
-        if (models.length > 0) {
-          this.ollamaModel = models[0]
-          // console.log(`[LLMHelper] Fallback to: ${this.ollamaModel}`)
-        }
-      } catch (fallbackError: any) {
-        // console.error(`[LLMHelper] Fallback also failed: ${fallbackError.message}`)
-      }
-    }
   }
 
   /**
@@ -588,8 +485,8 @@ Output EXACTLY this JSON structure, and nothing else (no markdown fences around 
   "brainstorm_script": "3-4 conversational sentences. First, mention a naive/brute-force approach and its complexity. Then, pivot to the optimal approach, mentioning the key data structure or algorithm. End by asking the interviewer if you can proceed with the optimal approach. Keep it natural.",
   "code": "The full, production-ready, heavily-commented optimal code solution in the language shown or Python if unclear. Include all necessary imports.",
   "dry_run_script": "2-3 conversational sentences doing a quick dry-run of the code with a simple example input. E.g., 'Let\\'s trace this. If our array is [1,2], the loop starts...'",
-  "time_complexity": "O(...) — brief 5-word explanation",
-  "space_complexity": "O(...) — brief 5-word explanation"
+  "time_complexity": "O(...) â€” brief 5-word explanation",
+  "space_complexity": "O(...) â€” brief 5-word explanation"
 }
 
 CRITICAL RULES:
@@ -692,7 +589,7 @@ CRITICAL RULES:
   }
 
   /**
-   * Generate a suggestion based on conversation transcript - Natively-style
+   * Generate a suggestion based on conversation transcript - live-assistant style
    * This uses Gemini Flash to reason about what the user should say
    * @param context - The full conversation transcript
    * @param lastQuestion - The most recent question from the interviewer
@@ -719,35 +616,93 @@ ${lastQuestion}
 
 ANSWER DIRECTLY:`;
 
-    // Apply language instruction so this path honurs the user's language setting
-    const systemPrompt = this.injectLanguageInstruction(basePrompt);
+    // Apply mode + language instructions so this path honors user personalization.
+    const systemPrompt = this.injectLanguageInstruction(this.applyActiveModePrompt(basePrompt));
 
     try {
-      if (this.useOllama) {
-        return await this.callOllama(systemPrompt);
-      } else if (this.client) {
-        const text = await this.generateWithFlash([{ text: systemPrompt }]);
-        return this.processResponse(text);
-      } else {
-        throw new Error("No LLM provider configured");
-      }
+      // Route through the selected-model pipeline so settings defaults such as
+      // OpenRouter/cURL providers work for manual AI-panel and model-test calls.
+      const text = await this.chatWithGemini(systemPrompt, undefined, undefined, true);
+      return this.processResponse(text);
     } catch (error) {
       throw error;
     }
   }
 
-  public setKnowledgeOrchestrator(orchestrator: any): void {
-    this.knowledgeOrchestrator = orchestrator;
-    console.log('[LLMHelper] KnowledgeOrchestrator attached');
+  public setRealtimeModes(modes: any[] = [], activeModeId: string | null = null): void {
+    const normalized: RealtimeMode[] = [];
+    const seen = new Set<string>();
+
+    for (const [index, rawMode] of (Array.isArray(modes) ? modes : []).entries()) {
+      const rawId = String(rawMode?.id || '').trim();
+      const rawName = String(rawMode?.name || '').trim();
+      const rawPrompt = String(rawMode?.prompt || '').trim();
+
+      if (!rawPrompt) continue;
+
+      const fallbackId = `mode-${index + 1}`;
+      let id = rawId || fallbackId;
+      if (seen.has(id)) {
+        id = `${id}-${index + 1}`;
+      }
+      seen.add(id);
+
+      normalized.push({
+        id,
+        name: rawName || `Mode ${index + 1}`,
+        prompt: rawPrompt,
+        referenceFiles: Array.isArray(rawMode?.referenceFiles)
+          ? rawMode.referenceFiles
+              .map((file: any) => ({
+                id: String(file?.id || '').trim(),
+                name: String(file?.name || '').trim() || 'Reference file',
+                text: typeof file?.text === 'string' ? file.text.slice(0, 12000) : '',
+              }))
+              .filter((file: any) => file.id || file.text)
+          : [],
+      });
+    }
+
+    this.realtimeModes = normalized;
+    this.activeRealtimeModeId =
+      activeModeId && normalized.some((mode) => mode.id === activeModeId)
+        ? activeModeId
+        : null;
+
+    const active = this.realtimeModes.find((mode) => mode.id === this.activeRealtimeModeId);
+    console.log(`[LLMHelper] Realtime modes updated: ${this.realtimeModes.length} mode(s), active=${active?.name || 'none'}`);
   }
 
-  public getKnowledgeOrchestrator(): any {
-    return this.knowledgeOrchestrator;
+  public getRealtimeModes(): { modes: RealtimeMode[]; activeModeId: string | null } {
+    return {
+      modes: this.realtimeModes.map((mode) => ({ ...mode })),
+      activeModeId: this.activeRealtimeModeId,
+    };
   }
 
   public setAiResponseLanguage(language: string) {
     this.aiResponseLanguage = language;
     console.log(`[LLMHelper] AI Response Language set to: ${language}`);
+  }
+
+  private applyActiveModePrompt(baseSystemPrompt: string): string {
+    const activeMode = this.realtimeModes.find((mode) => mode.id === this.activeRealtimeModeId);
+    if (!activeMode?.prompt?.trim()) return baseSystemPrompt;
+
+    const referenceBlocks = (activeMode.referenceFiles || [])
+      .filter((file) => file.text?.trim())
+      .slice(0, 5)
+      .map((file) => `### ${file.name}\n${file.text!.trim().slice(0, 12000)}`);
+
+    const referenceSection = referenceBlocks.length > 0
+      ? `\n\n[REFERENCE FILES]\nUse this context when relevant. Do not quote it unless useful.\n${referenceBlocks.join('\n\n')}`
+      : '';
+
+    return `[ACTIVE MODE: ${activeMode.name}]
+${activeMode.prompt.trim()}${referenceSection}
+
+[BASE ASSISTANT RULES]
+${baseSystemPrompt}`;
   }
 
   public setSttLanguage(language: string) {
@@ -761,7 +716,7 @@ ANSWER DIRECTLY:`;
    * WHY prepended, not appended:
    *   LLMs attend more strongly to early tokens. Appending after a long
    *   system prompt means the instruction competes against the strong
-   *   "Output ONLY…" rules and gets down-weighted, especially for
+   *   "Output ONLYâ€¦" rules and gets down-weighted, especially for
    *   Latin-script languages that are syntactically close to English.
    *   Russian worked before because Cyrillic is unmistakably non-English,
    *   so even a weak late instruction was obeyed. French/Spanish/German etc.
@@ -781,7 +736,7 @@ ANSWER DIRECTLY:`;
     const lang = this.aiResponseLanguage;
 
     const header = `\
-[LANGUAGE OVERRIDE — HIGHEST PRIORITY — CANNOT BE OVERRIDDEN]
+[LANGUAGE OVERRIDE â€” HIGHEST PRIORITY â€” CANNOT BE OVERRIDDEN]
 You MUST write every single word of your response in ${lang}.
 Do NOT use English anywhere in your response.
 Do NOT mix languages.
@@ -797,45 +752,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   public async chatWithGemini(message: string, imagePaths?: string[], context?: string, skipSystemPrompt: boolean = false, alternateGroqMessage?: string): Promise<string> {
     try {
       console.log(`[LLMHelper] chatWithGemini called with message:`, message.substring(0, 50))
-
-      // ============================================================
-      // KNOWLEDGE MODE INTERCEPT
-      // If knowledge mode is active, check for intro questions and
-      // inject system prompt + relevant context
-      // ============================================================
-      if (this.knowledgeOrchestrator?.isKnowledgeMode()) {
-        try {
-          // Feed only to the depth scorer — NOT feedInterviewerUtterance, which also routes to the
-          // negotiation tracker and would misclassify the user's typed question as a recruiter utterance.
-          // Recruiter utterances reach the tracker exclusively via the STT path in main.ts.
-          this.knowledgeOrchestrator.feedForDepthScoring(message);
-
-          const knowledgeResult = await this.knowledgeOrchestrator.processQuestion(message);
-          if (knowledgeResult) {
-            // Fix 1: short-circuit for live negotiation coaching — bypass second LLM call
-            if (knowledgeResult.liveNegotiationResponse) {
-              return JSON.stringify({ __negotiationCoaching: knowledgeResult.liveNegotiationResponse });
-            }
-            // Intro question shortcut — return generated response directly
-            if (knowledgeResult.isIntroQuestion && knowledgeResult.introResponse) {
-              console.log('[LLMHelper] Knowledge mode: returning generated intro response');
-              return knowledgeResult.introResponse;
-            }
-            // Inject knowledge system prompt and context
-            if (!skipSystemPrompt && knowledgeResult.systemPromptInjection) {
-              skipSystemPrompt = false; // ensure we use the knowledge prompt
-              // Prepend knowledge context to existing context
-              if (knowledgeResult.contextBlock) {
-                context = context
-                  ? `${knowledgeResult.contextBlock}\n\n${context}`
-                  : knowledgeResult.contextBlock;
-              }
-            }
-          }
-        } catch (knowledgeError: any) {
-          console.warn('[LLMHelper] Knowledge mode processing failed, falling back to normal:', knowledgeError.message);
-        }
-      }
 
       const isMultimodal = !!(imagePaths?.length);
 
@@ -856,8 +772,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
         : message;
 
-      const finalGeminiPrompt = this.injectLanguageInstruction(HARD_SYSTEM_PROMPT);
-      const finalGroqPrompt = alternateGroqMessage || this.injectLanguageInstruction(GROQ_SYSTEM_PROMPT);
+      const finalGeminiPrompt = this.injectLanguageInstruction(this.applyActiveModePrompt(HARD_SYSTEM_PROMPT));
+      const finalGroqPrompt = alternateGroqMessage || this.injectLanguageInstruction(this.applyActiveModePrompt(GROQ_SYSTEM_PROMPT));
 
       const combinedMessages = {
         gemini: buildMessage(finalGeminiPrompt),
@@ -865,8 +781,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       };
 
       // GROQ FAST TEXT OVERRIDE (Text-Only)
-      if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
-        console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active. Routing to Groq...`);
+      const allowGroqFastOverride = !this.customProvider && !this.activeCurlProvider;
+      if (this.groqFastTextMode && allowGroqFastOverride && !isMultimodal && this.groqClient) {
+        console.log(`[LLMHelper] âš¡ï¸ Groq Fast Text Mode Active. Routing to Groq...`);
         try {
           return await this.generateWithGroq(combinedMessages.groq);
         } catch (e: any) {
@@ -876,21 +793,21 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       // System prompts for OpenAI/Claude (skipped if skipSystemPrompt)
-      const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
-      const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
-
-      if (this.useOllama) {
-        return await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
-      }
+      const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(this.applyActiveModePrompt(OPENAI_SYSTEM_PROMPT));
+      const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(this.applyActiveModePrompt(CLAUDE_SYSTEM_PROMPT));
 
       if (this.activeCurlProvider) {
-        return await this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT), imagePaths?.[0]);
+        return await this.chatWithCurl(
+          message,
+          skipSystemPrompt ? undefined : this.injectLanguageInstruction(this.applyActiveModePrompt(CUSTOM_SYSTEM_PROMPT)),
+          imagePaths?.[0]
+        );
       }
 
       if (this.customProvider) {
         console.log(`[LLMHelper] Using Custom Provider: ${this.customProvider.name}`);
-        // For non-streaming call — use rich CUSTOM prompts since custom providers can be cloud models
-        const customSystemPrompt = skipSystemPrompt ? "" : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT);
+        // For non-streaming call â€” use rich CUSTOM prompts since custom providers can be cloud models
+        const customSystemPrompt = skipSystemPrompt ? "" : this.injectLanguageInstruction(this.applyActiveModePrompt(CUSTOM_SYSTEM_PROMPT));
         const response = await this.executeCustomProvider(
           this.customProvider.curlCommand,
           combinedMessages.gemini,
@@ -903,19 +820,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       // --- Direct Routing based on Selected Model ---
-      if (this.currentModelId === 'natively') {
-        const { CredentialsManager } = require('./services/CredentialsManager');
-        const nativelyKey = CredentialsManager.getInstance().getNativelyApiKey();
-        if (nativelyKey) {
-          try {
-            return await this.generateWithNatively(userContent, openaiSystemPrompt, imagePaths);
-          } catch (err: any) {
-            console.warn('[LLMHelper] Natively API failed in chatWithGemini, falling back to Gemini:', err.message);
-            // Fall through to smart dynamic fallback below
-          }
-        }
-        // No key or call failed — fall through to default routing
-      }
       if (this.isOpenAiModel(this.currentModelId) && this.openaiClient) {
         return await this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths);
       }
@@ -933,8 +837,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
       // ============================================================
       // SMART DYNAMIC FALLBACK (Non-Streaming)
-      // Multimodal: Gemini Flash → OpenAI → Claude → Gemini Pro (Groq excluded)
-      // Text-only:  Gemini Flash → Gemini Pro → Groq → OpenAI → Claude
+      // Multimodal: Gemini Flash â†’ OpenAI â†’ Claude â†’ Gemini Pro (Groq excluded)
+      // Text-only:  Gemini Flash â†’ Gemini Pro â†’ Groq â†’ OpenAI â†’ Claude
       // OpenAI/Claude use proper system+user message separation
       // ============================================================
       type ProviderAttempt = { name: string; execute: () => Promise<string> };
@@ -948,10 +852,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const textGroq = this.modelVersionManager.getTextTieredModels(TextModelFamily.GROQ).tier1;
 
       if (isMultimodal) {
-        // MULTIMODAL PROVIDER ORDER: [Natively] -> OpenAI -> Gemini Flash -> Claude -> Gemini Pro -> Groq -> Custom/Ollama
-        if (this.hasNatively()) {
-          providers.push({ name: 'Natively API', execute: () => this.generateWithNatively(userContent, openaiSystemPrompt, imagePaths) });
-        }
         if (this.openaiClient) {
           providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths, textOpenAI) });
         }
@@ -977,10 +877,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           });
         }
       } else {
-        // TEXT-ONLY: [Natively] -> Groq -> Gemini Flash -> Gemini Pro -> OpenAI -> Claude
-        if (this.hasNatively()) {
-          providers.push({ name: 'Natively API', execute: () => this.generateWithNatively(userContent, openaiSystemPrompt) });
-        }
         if (this.groqClient) {
           providers.push({ name: `Groq (${textGroq})`, execute: () => this.generateWithGroq(combinedMessages.groq) });
         }
@@ -1015,27 +911,27 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       for (let rotation = 0; rotation < MAX_FULL_ROTATIONS; rotation++) {
         if (rotation > 0) {
           const backoffMs = 1000 * rotation;
-          console.log(`[LLMHelper] 🔄 Non-streaming rotation ${rotation + 1}/${MAX_FULL_ROTATIONS} after ${backoffMs}ms backoff...`);
+          console.log(`[LLMHelper] ðŸ”„ Non-streaming rotation ${rotation + 1}/${MAX_FULL_ROTATIONS} after ${backoffMs}ms backoff...`);
           await this.delay(backoffMs);
         }
 
         for (const provider of providers) {
           try {
-            console.log(`[LLMHelper] ${rotation === 0 ? '🚀' : '🔁'} Attempting ${provider.name}...`);
+            console.log(`[LLMHelper] ${rotation === 0 ? 'ðŸš€' : 'ðŸ”'} Attempting ${provider.name}...`);
             const rawResponse = await provider.execute();
             if (rawResponse && rawResponse.trim().length > 0) {
-              console.log(`[LLMHelper] ✅ ${provider.name} succeeded`);
+              console.log(`[LLMHelper] âœ… ${provider.name} succeeded`);
               return this.processResponse(rawResponse);
             }
-            console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
+            console.warn(`[LLMHelper] âš ï¸ ${provider.name} returned empty response`);
           } catch (error: any) {
-            console.warn(`[LLMHelper] ⚠️ ${provider.name} failed: ${error.message}`);
+            console.warn(`[LLMHelper] âš ï¸ ${provider.name} failed: ${error.message}`);
           }
         }
       }
 
       // All exhausted
-      console.error("[LLMHelper] ❌ All non-streaming providers exhausted");
+      console.error("[LLMHelper] âŒ All non-streaming providers exhausted");
       return "I apologize, but I couldn't generate a response. Please try again.";
 
     } catch (error: any) {
@@ -1053,9 +949,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
   /**
    * Generate content using only reasoning-capable models.
-   * Priority: OpenAI → Claude → Gemini Pro → Groq (last resort).
+   * Priority: OpenAI â†’ Claude â†’ Gemini Pro â†’ Groq (last resort).
    * Used for structured JSON output tasks (resume/JD/company research).
-   * NOTE: Does NOT mutate this.geminiModel — calls Gemini Pro directly to avoid race conditions.
+   * NOTE: Does NOT mutate this.geminiModel â€” calls Gemini Pro directly to avoid race conditions.
    */
   public async generateContentStructured(message: string): Promise<string> {
     type ProviderAttempt = { name: string; execute: () => Promise<string> };
@@ -1067,7 +963,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
 
     // Priority 2: Gemini Pro (don't mutate this.geminiModel to avoid race conditions)
-    // NOTE: Claude is intentionally de-prioritised here — messages.create (non-streaming) is
+    // NOTE: Claude is intentionally de-prioritised here â€” messages.create (non-streaming) is
     // rejected by Anthropic for large payloads ("Streaming is required for operations that may
     // take longer than 10 minutes"), causing a wasted round-trip before the Gemini fallback.
     // Claude remains available as a last resort after Gemini Flash.
@@ -1115,7 +1011,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       });
     }
 
-    // Priority 4: Claude (last resort before Groq — non-streaming, fails on large payloads)
+    // Priority 4: Claude (last resort before Groq â€” non-streaming, fails on large payloads)
     if (this.claudeClient) {
       providers.push({ name: `Claude (${CLAUDE_MODEL})`, execute: () => this.generateWithClaude(message) });
     }
@@ -1125,48 +1021,29 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       providers.push({ name: `Groq (${GROQ_MODEL}) fallback`, execute: () => this.generateWithGroq(message) });
     }
 
-    // Priority 6: Ollama (on-device fallback — last resort, no cloud dependency)
-    if (this.useOllama && await this.checkOllamaAvailable()) {
-      providers.push({
-        name: `Ollama (${this.ollamaModel})`,
-        execute: () => this.callOllama(message)
-      });
-    }
-
-    // Priority 7: Natively API — used when no other provider is available, or as final fallback
-    const nativelyKeyForStructured = this.nativelyKey || (() => {
-      try { return require('./services/CredentialsManager').CredentialsManager.getInstance().getNativelyApiKey() || null; } catch { return null; }
-    })();
-    if (nativelyKeyForStructured) {
-      providers.push({
-        name: 'Natively API',
-        execute: () => this.generateWithNatively(message)
-      });
-    }
-
     if (providers.length === 0) {
-      throw new Error('No reasoning model available. Please configure an OpenAI, Claude, Gemini, Groq, or Natively API key.');
+      throw new Error('No reasoning model available. Please configure an OpenAI, Claude, Gemini, Groq, or local model provider.');
     }
 
     const MAX_ROTATIONS = 3;
     for (let rotation = 0; rotation < MAX_ROTATIONS; rotation++) {
       if (rotation > 0) {
         const backoffMs = 1000 * rotation;
-        console.log(`[LLMHelper] 🔄 Structured generation rotation ${rotation + 1}/${MAX_ROTATIONS} after ${backoffMs}ms backoff...`);
+        console.log(`[LLMHelper] ðŸ”„ Structured generation rotation ${rotation + 1}/${MAX_ROTATIONS} after ${backoffMs}ms backoff...`);
         await this.delay(backoffMs);
       }
 
       for (const provider of providers) {
         try {
-          console.log(`[LLMHelper] 🧠 Structured generation: trying ${provider.name}...`);
+          console.log(`[LLMHelper] ðŸ§  Structured generation: trying ${provider.name}...`);
           const result = await provider.execute();
           if (result && result.trim().length > 0) {
-            console.log(`[LLMHelper] ✅ Structured generation succeeded with ${provider.name}`);
+            console.log(`[LLMHelper] âœ… Structured generation succeeded with ${provider.name}`);
             return result;
           }
-          console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
+          console.warn(`[LLMHelper] âš ï¸ ${provider.name} returned empty response`);
         } catch (error: any) {
-          console.warn(`[LLMHelper] ⚠️ Structured generation: ${provider.name} failed: ${error.message}`);
+          console.warn(`[LLMHelper] âš ï¸ Structured generation: ${provider.name} failed: ${error.message}`);
         }
       }
     }
@@ -1194,60 +1071,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   /**
    * Non-streaming OpenAI generation with proper system/user separation
    */
-  /**
-   * Routes AI generation through the Natively API backend (Gemini-powered).
-   */
-  private async generateWithNatively(userMessage: string, systemPrompt?: string, imagePaths?: string[]): Promise<string> {
-    // Prefer the in-memory field; fall back to CredentialsManager for the direct-routing path
-    // where currentModelId === 'natively' but setNativelyKey() wasn't called yet.
-    let nativelyKey = this.nativelyKey;
-    if (!nativelyKey) {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      nativelyKey = CredentialsManager.getInstance().getNativelyApiKey() || null;
-    }
-    if (!nativelyKey) throw new Error('Natively API key not set');
 
-    const endpointUrl = 'https://natively-api-production.up.railway.app/v1/chat';
-    const headers: any = { 'x-natively-key': nativelyKey, 'Content-Type': 'application/json' };
-
-    const body: any = { messages: [{ role: 'user', content: userMessage }] };
-
-    // Signal fast mode so the server routes to Groq Llama 3.3 (text-only, key-rotated).
-    // Only sent for text-only requests — server ignores it when images are present.
-    if (this.groqFastTextMode) body.fast_mode = true;
-
-    // Send images as a structured array so the server can build proper Gemini inlineData parts.
-    // Embedding base64 in the text content would be truncated at 4000 chars and treated as text.
-    if (imagePaths?.length) {
-      const images: { mime_type: string; data: string }[] = [];
-      for (const p of imagePaths) {
-        if (fs.existsSync(p)) {
-          const imageData = await fs.promises.readFile(p);
-          images.push({ mime_type: 'image/png', data: imageData.toString('base64') });
-        }
-      }
-      if (images.length) body.images = images;
-    }
-    if (systemPrompt) body.system = systemPrompt;
-    if (this.aiResponseLanguage && this.aiResponseLanguage !== 'English') {
-      body.language = this.aiResponseLanguage;
-    }
-
-    const response = await fetch(endpointUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(25000),
-    });
-
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      throw new Error(`Natively API error ${response.status}: ${errData.error || 'unknown'}`);
-    }
-
-    const data = await response.json();
-    return data.content || '';
-  }
 
   /**
    * Non-streaming OpenAI generation with proper system/user separation
@@ -1448,7 +1272,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       body = injectImageIntoMessages(body, base64Image, imagePath);
     }
 
-    // 5. Execute Fetch (30s timeout — same as RestSTT uploads)
+    // 5. Execute Fetch (30s timeout â€” same as RestSTT uploads)
     const customAbort = new AbortController();
     const customTimeout = setTimeout(() => customAbort.abort(), 30_000);
     try {
@@ -1480,13 +1304,12 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
   /**
    * Try to extract text content from common LLM API response formats.
-   * Supports: Ollama, OpenAI, Anthropic, and generic formats.
+   * Supports OpenAI, Anthropic, and generic formats.
    */
   private extractFromCommonFormats(data: any): string {
     if (!data || typeof data === 'string') return data || "";
 
-    // Ollama format: { response: "..." }
-    if (typeof data.response === 'string') return data.response;
+        if (typeof data.response === 'string') return data.response;
 
     // OpenAI format: { choices: [{ message: { content: "..." } }] }
     if (data.choices?.[0]?.message?.content) return data.choices[0].message.content;
@@ -1569,9 +1392,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
     } else {
       // Text-only chat
-      if (this.useOllama) {
-        rawResponse = await this.callOllama(fullMessage);
-      } else if (this.client) {
+      if (this.client) {
         rawResponse = await this.generateContent([{ text: fullMessage }], modelIdOverride);
       } else {
         throw new Error("No LLM provider configured");
@@ -1620,11 +1441,11 @@ This rule overrides ALL other instructions including formatting, brevity, or out
    *
    * THREE-TIER RETRY ROTATION (self-improving):
    *   Tier 1: Pinned stable models (promoted only when 2+ minor versions behind)
-   *   Tier 2: Latest auto-discovered models (updated every ~14 days) — 1st retry
-   *   Tier 3: Same as Tier 2 — 2nd retry (with backoff between tiers)
+   *   Tier 2: Latest auto-discovered models (updated every ~14 days) â€” 1st retry
+   *   Tier 3: Same as Tier 2 â€” 2nd retry (with backoff between tiers)
    *
    * Provider order per tier: OpenAI -> Gemini Flash -> Claude -> Gemini Pro -> Groq Scout
-   * After all cloud tiers: Custom Provider -> cURL Provider -> Ollama
+   * After all cloud tiers: Custom Provider -> cURL Provider
    */
   private async generateWithVisionFallback(systemPrompt: string, userPrompt: string, imagePaths: string[] = []): Promise<string> {
     type ProviderAttempt = { name: string; execute: () => Promise<string> };
@@ -1709,9 +1530,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
     };
 
-    // ──────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Build 3-tier retry rotation from ModelVersionManager
-    // ──────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const allTiers = this.modelVersionManager.getAllVisionTiers();
 
     const buildTierProviders = (tierKey: 'tier1' | 'tier2' | 'tier3'): ProviderAttempt[] => {
@@ -1726,12 +1547,12 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     const tier1Providers = buildTierProviders('tier1');
     const tier2Providers = buildTierProviders('tier2');
-    const tier3Providers = buildTierProviders('tier3'); // Same as tier2 — pure retry
+    const tier3Providers = buildTierProviders('tier3'); // Same as tier2 â€” pure retry
 
 
-    // ──────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Local fallback providers (appended after all cloud tiers)
-    // ──────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const localProviders: ProviderAttempt[] = [];
 
     if (this.customProvider) {
@@ -1768,16 +1589,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       });
     }
 
-    if (this.useOllama) {
-      localProviders.push({
-        name: `Ollama (${this.ollamaModel})`,
-        execute: () => this.callOllama(`${systemPrompt}\n\n${userPrompt}`, isMultimodal ? imagePaths[0] : undefined)
-      });
-    }
-
-    // ──────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Execute 3-tier rotation with exponential backoff between tiers
-    // ──────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const tiers = [
       { label: 'Tier 1 (Stable)', providers: tier1Providers },
       { label: 'Tier 2 (Latest)', providers: tier2Providers },
@@ -1792,22 +1606,22 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       // Exponential backoff between tiers (skip for first tier)
       if (tierIndex > 0) {
         const backoffMs = 1000 * Math.pow(2, tierIndex - 1);
-        console.log(`[LLMHelper] 🔄 Escalating to ${tier.label} after ${backoffMs}ms backoff...`);
+        console.log(`[LLMHelper] ðŸ”„ Escalating to ${tier.label} after ${backoffMs}ms backoff...`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
       }
 
       for (const provider of tier.providers) {
         try {
-          const emoji = tierIndex === 0 ? '🚀' : tierIndex === 1 ? '🔁' : '🆘';
+          const emoji = tierIndex === 0 ? 'ðŸš€' : tierIndex === 1 ? 'ðŸ”' : 'ðŸ†˜';
           console.log(`[LLMHelper] ${emoji} [${tier.label}] Attempting ${provider.name}...`);
           const result = await provider.execute();
           if (result && result.trim().length > 0) {
-            console.log(`[LLMHelper] ✅ [${tier.label}] ${provider.name} succeeded.`);
+            console.log(`[LLMHelper] âœ… [${tier.label}] ${provider.name} succeeded.`);
             return result;
           }
-          console.warn(`[LLMHelper] ⚠️ [${tier.label}] ${provider.name} returned empty response`);
+          console.warn(`[LLMHelper] âš ï¸ [${tier.label}] ${provider.name} returned empty response`);
         } catch (err: any) {
-          console.warn(`[LLMHelper] ⚠️ [${tier.label}] ${provider.name} failed: ${err.message}`);
+          console.warn(`[LLMHelper] âš ï¸ [${tier.label}] ${provider.name} failed: ${err.message}`);
 
           // Event-driven discovery: trigger on 404 / model-not-found errors
           const errMsg = (err.message || '').toLowerCase();
@@ -1818,19 +1632,19 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
     }
 
-    // ──────────────────────────────────────────────────────────────────
-    // Local fallback — absolute last resort after all cloud tiers exhausted
-    // ──────────────────────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Local fallback â€” absolute last resort after all cloud tiers exhausted
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for (const provider of localProviders) {
       try {
-        console.log(`[LLMHelper] 🏠 [Local Fallback] Attempting ${provider.name}...`);
+        console.log(`[LLMHelper] ðŸ  [Local Fallback] Attempting ${provider.name}...`);
         const result = await provider.execute();
         if (result && result.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ [Local Fallback] ${provider.name} succeeded.`);
+          console.log(`[LLMHelper] âœ… [Local Fallback] ${provider.name} succeeded.`);
           return result;
         }
       } catch (err: any) {
-        console.warn(`[LLMHelper] ⚠️ [Local Fallback] ${provider.name} failed: ${err.message}`);
+        console.warn(`[LLMHelper] âš ï¸ [Local Fallback] ${provider.name} failed: ${err.message}`);
       }
     }
 
@@ -1879,12 +1693,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       groq: buildCombinedMessage(GROQ_SYSTEM_PROMPT),
     };
 
-    if (this.useOllama) {
-      const response = await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
-      yield response;
-      return;
-    }
-
     // ============================================================
     // SMART DYNAMIC FALLBACK: Build provider list using auto-discovered
     // text models from ModelVersionManager.
@@ -1907,10 +1715,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     const textGroq = this.modelVersionManager.getTextTieredModels(TextModelFamily.GROQ).tier1;
 
     if (isMultimodal) {
-      // MULTIMODAL PROVIDER ORDER: [Natively] -> OpenAI -> Gemini Flash -> Claude -> Gemini Pro -> Groq Scout 4
-      if (this.hasNatively()) {
-        providers.push({ name: 'Natively API', execute: () => this.streamWithNatively(userContent, openaiSystemPrompt, imagePaths) });
-      }
       if (this.openaiClient) {
         providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenaiMultimodal(userContent, imagePaths!, openaiSystemPrompt, textOpenAI) });
       }
@@ -1927,10 +1731,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         providers.push({ name: `Groq (meta-llama/llama-4-scout-17b-16e-instruct)`, execute: () => this.streamWithGroqMultimodal(userContent, imagePaths!, openaiSystemPrompt) });
       }
     } else {
-      // TEXT-ONLY PROVIDER ORDER: [Natively] → Groq → OpenAI → Claude → Gemini Flash → Gemini Pro
-      if (this.hasNatively()) {
-        providers.push({ name: 'Natively API', execute: () => this.streamWithNatively(userContent, openaiSystemPrompt) });
-      }
       if (this.groqClient) {
         providers.push({ name: `Groq (${textGroq})`, execute: () => this.streamWithGroq(combinedMessages.groq) });
       }
@@ -1956,8 +1756,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Ensure the model the user selected handles the request first
     // before falling back to others.
     // ============================================================
-    const currentFamilyLabel = this.currentModelId === 'natively' ? 'Natively'
-      : this.isClaudeModel(this.currentModelId) ? 'Claude'
+    const currentFamilyLabel = this.isClaudeModel(this.currentModelId) ? 'Claude'
       : this.isOpenAiModel(this.currentModelId) ? 'OpenAI'
       : this.isGroqModel(this.currentModelId) ? 'Groq'
       : this.isGeminiModel(this.currentModelId) ? 'Gemini'
@@ -1971,16 +1770,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       });
     }
 
-    // Natively is always first when configured, regardless of which model is selected.
-    // The sort above may have displaced it — restore it to position 0.
-    if (this.hasNatively() && providers[0]?.name !== 'Natively API') {
-      const idx = providers.findIndex(p => p.name === 'Natively API');
-      if (idx > 0) {
-        const [entry] = providers.splice(idx, 1);
-        providers.unshift(entry);
-      }
-    }
-
     // ============================================================
     // RELENTLESS RETRY: Try all providers, then retry entire chain
     // with exponential backoff. Max 2 full rotations.
@@ -1990,26 +1779,26 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     for (let rotation = 0; rotation < MAX_FULL_ROTATIONS; rotation++) {
       if (rotation > 0) {
         const backoffMs = 1000 * rotation;
-        console.log(`[LLMHelper] 🔄 Starting rotation ${rotation + 1}/${MAX_FULL_ROTATIONS} after ${backoffMs}ms backoff...`);
+        console.log(`[LLMHelper] ðŸ”„ Starting rotation ${rotation + 1}/${MAX_FULL_ROTATIONS} after ${backoffMs}ms backoff...`);
         await this.delay(backoffMs);
       }
 
       for (let i = 0; i < providers.length; i++) {
         const provider = providers[i];
         try {
-          console.log(`[LLMHelper] ${rotation === 0 ? '🚀' : '🔁'} Attempting ${provider.name}...`);
+          console.log(`[LLMHelper] ${rotation === 0 ? 'ðŸš€' : 'ðŸ”'} Attempting ${provider.name}...`);
           yield* provider.execute();
-          console.log(`[LLMHelper] ✅ ${provider.name} stream completed successfully`);
-          return; // SUCCESS — exit immediately
+          console.log(`[LLMHelper] âœ… ${provider.name} stream completed successfully`);
+          return; // SUCCESS â€” exit immediately
         } catch (err: any) {
-          console.warn(`[LLMHelper] ⚠️ ${provider.name} failed: ${err.message}`);
+          console.warn(`[LLMHelper] âš ï¸ ${provider.name} failed: ${err.message}`);
           // Continue to next provider
         }
       }
     }
 
     // Truly exhausted after all rotations
-    console.error(`[LLMHelper] ❌ All providers exhausted after ${MAX_FULL_ROTATIONS} rotations`);
+    console.error(`[LLMHelper] âŒ All providers exhausted after ${MAX_FULL_ROTATIONS} rotations`);
     yield "All AI services are currently unavailable. Please check your API keys and try again.";
   }
 
@@ -2020,46 +1809,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     message: string,
     imagePaths?: string[],
     context?: string,
-    systemPromptOverride?: string, // Optional override (defaults to HARD_SYSTEM_PROMPT)
-    ignoreKnowledgeMode: boolean = false
+    systemPromptOverride?: string // Optional override (defaults to HARD_SYSTEM_PROMPT)
   ): AsyncGenerator<string, void, unknown> {
-
-    // ============================================================
-    // KNOWLEDGE MODE INTERCEPT (Streaming)
-    // ============================================================
-    if (!ignoreKnowledgeMode && this.knowledgeOrchestrator?.isKnowledgeMode()) {
-      try {
-        // Feed to depth scorer only (not negotiation tracker) — mirrors non-streaming path fix.
-        this.knowledgeOrchestrator.feedForDepthScoring(message);
-
-        const knowledgeResult = await this.knowledgeOrchestrator.processQuestion(message);
-        if (knowledgeResult) {
-          // Fix 1: short-circuit for live negotiation coaching — bypass second LLM call
-          if (knowledgeResult.liveNegotiationResponse) {
-            yield JSON.stringify({ __negotiationCoaching: knowledgeResult.liveNegotiationResponse });
-            return;
-          }
-          // Intro question shortcut — yield generated response directly
-          if (knowledgeResult.isIntroQuestion && knowledgeResult.introResponse) {
-            console.log('[LLMHelper] Knowledge mode (stream): returning generated intro response');
-            yield knowledgeResult.introResponse;
-            return;
-          }
-          // Inject knowledge system prompt
-          if (knowledgeResult.systemPromptInjection) {
-            systemPromptOverride = knowledgeResult.systemPromptInjection;
-          }
-          // Inject knowledge context
-          if (knowledgeResult.contextBlock) {
-            context = context
-              ? `${knowledgeResult.contextBlock}\n\n${context}`
-              : knowledgeResult.contextBlock;
-          }
-        }
-      } catch (knowledgeError: any) {
-        console.warn('[LLMHelper] Knowledge mode (stream) processing failed, falling back:', knowledgeError.message);
-      }
-    }
 
     // Preparation
     const isMultimodal = !!(imagePaths?.length);
@@ -2067,7 +1818,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Determine the system prompt to use
     // logic: if override provided, use it. otherwise use HARD_SYSTEM_PROMPT (which is the universal base)
     const baseSystemPrompt = systemPromptOverride || HARD_SYSTEM_PROMPT;
-    const finalSystemPrompt = this.injectLanguageInstruction(baseSystemPrompt);
+    const finalSystemPrompt = this.injectLanguageInstruction(this.applyActiveModePrompt(baseSystemPrompt));
 
     // Helper to build combined user message
     const userContent = context
@@ -2075,41 +1826,26 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       : message;
 
     // GROQ FAST TEXT OVERRIDE (Text-Only)
-    // Two paths: local Groq key → call Groq directly; Natively API only → send fast_mode:true
+    // Two paths: local Groq key â†’ call Groq directly.
     // to the server so it routes to its internal Groq pool (llama-3.3-70b-versatile).
-    if (this.groqFastTextMode && !isMultimodal) {
+    const allowGroqFastOverride = !this.customProvider && !this.activeCurlProvider;
+    if (this.groqFastTextMode && allowGroqFastOverride && !isMultimodal) {
       if (this.groqClient) {
-        console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active (Streaming). Routing to local Groq...`);
+        console.log(`[LLMHelper] âš¡ï¸ Groq Fast Text Mode Active (Streaming). Routing to local Groq...`);
         try {
           const groqSystem = systemPromptOverride || GROQ_SYSTEM_PROMPT;
-          const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
+          const finalGroqSystem = this.injectLanguageInstruction(this.applyActiveModePrompt(groqSystem));
           const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
           yield* this.streamWithGroq(groqFullMessage);
           return;
         } catch (e: any) {
           console.warn("[LLMHelper] Groq Fast Text streaming failed, falling back:", e.message);
         }
-        // Local Groq failed — fall through to Natively if available
-      }
-      if (this.hasNatively()) {
-        // streamWithNatively → generateWithNatively → sends fast_mode:true → server Groq pool
-        console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active (Streaming). Routing to Natively server Groq pool...`);
-        try {
-          yield* this.streamWithNatively(userContent, finalSystemPrompt);
-          return;
-        } catch (e: any) {
-          console.warn("[LLMHelper] Natively fast-mode failed, falling back:", e.message);
-        }
+        // Local Groq failed; fall through to the normal provider chain
       }
     }
 
-    // 1. Ollama Streaming
-    if (this.useOllama) {
-      yield* this.streamWithOllama(message, context, finalSystemPrompt, imagePaths);
-      return;
-    }
-
-    // 2a. CustomProvider (switchToCustom path) — full SSE-capable streaming
+    // 2a. CustomProvider (switchToCustom path) â€” full SSE-capable streaming
     if (this.customProvider) {
       yield* this.streamWithCustom(message, context, imagePaths, finalSystemPrompt);
       return;
@@ -2117,12 +1853,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // 2b. Custom Provider Streaming (via cURL - Non-streaming fallback for now)
     if (this.activeCurlProvider) {
-      const response = await this.executeCustomProvider(
-        this.activeCurlProvider.curlCommand,
+      const response = await this.chatWithCurl(
         userContent,
         finalSystemPrompt,
-        message,
-        context || "",
         imagePaths?.[0]
       );
       yield response;
@@ -2134,7 +1867,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // OpenAI
     if (this.isOpenAiModel(this.currentModelId) && this.openaiClient) {
       const openAiSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
-      const finalOpenAiSystem = this.injectLanguageInstruction(openAiSystem);
+      const finalOpenAiSystem = this.injectLanguageInstruction(this.applyActiveModePrompt(openAiSystem));
       if (isMultimodal && imagePaths) {
         yield* this.streamWithOpenaiMultimodal(userContent, imagePaths, finalOpenAiSystem);
       } else {
@@ -2146,7 +1879,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Claude
     if (this.isClaudeModel(this.currentModelId) && this.claudeClient) {
       const claudeSystem = systemPromptOverride || CLAUDE_SYSTEM_PROMPT;
-      const finalClaudeSystem = this.injectLanguageInstruction(claudeSystem);
+      const finalClaudeSystem = this.injectLanguageInstruction(this.applyActiveModePrompt(claudeSystem));
       if (isMultimodal && imagePaths) {
         yield* this.streamWithClaudeMultimodal(userContent, imagePaths, finalClaudeSystem);
       } else {
@@ -2160,50 +1893,16 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (isMultimodal && imagePaths) {
         // Route multimodal to Groq Llama 4 Scout (vision-capable)
         const groqSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
-        const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
+        const finalGroqSystem = this.injectLanguageInstruction(this.applyActiveModePrompt(groqSystem));
         yield* this.streamWithGroqMultimodal(userContent, imagePaths, finalGroqSystem);
         return;
       }
       // Text-only Groq
       const groqSystem = systemPromptOverride ? baseSystemPrompt : GROQ_SYSTEM_PROMPT;
-      const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
+      const finalGroqSystem = this.injectLanguageInstruction(this.applyActiveModePrompt(groqSystem));
       const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
       yield* this.streamWithGroq(groqFullMessage);
       return;
-    }
-
-    // 3b. Natively API
-    if (this.currentModelId === 'natively') {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const nativelyKey = CredentialsManager.getInstance().getNativelyApiKey();
-      if (nativelyKey) {
-        try {
-          const response = await this.generateWithNatively(userContent, finalSystemPrompt, imagePaths);
-          yield response;
-          return;
-        } catch (err: any) {
-          console.warn('[LLMHelper] Natively API failed in streamChat, trying Groq fallback:', err.message);
-          // Try Groq before Gemini — Groq key is more commonly available
-          if (this.groqClient) {
-            try {
-              if (isMultimodal && imagePaths) {
-                const groqSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
-                const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
-                yield* this.streamWithGroqMultimodal(userContent, imagePaths, finalGroqSystem);
-              } else {
-                const groqSystem = systemPromptOverride ? baseSystemPrompt : GROQ_SYSTEM_PROMPT;
-                const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
-                yield* this.streamWithGroq(`${finalGroqSystem}\n\n${userContent}`);
-              }
-              return;
-            } catch (groqErr: any) {
-              console.warn('[LLMHelper] Groq fallback also failed, trying Gemini:', groqErr.message);
-            }
-          }
-          // Fall through to Gemini
-        }
-      }
-      // No key or all fallbacks failed — fall through to Gemini
     }
 
     // 4. Gemini Routing & Fallback
@@ -2221,110 +1920,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       return;
     }
 
-    // 5. Last-resort: Natively API (if user has a key but no cloud provider configured)
-    if (this.hasNatively()) {
-      try {
-        yield* this.streamWithNatively(userContent, finalSystemPrompt, imagePaths);
-        return;
-      } catch (e: any) {
-        console.warn('[LLMHelper] Natively last-resort fallback failed:', e.message);
-      }
-    }
-
     throw new Error("No AI provider configured. Please add at least one API key in Settings.");
   }
 
-  /**
-   * Fake-stream for Natively API (non-streaming endpoint).
-   * Yields the full response in small word-batches so the UI typing effect still plays.
-   * Throws on empty response so the fallback chain tries the next provider.
-   */
-  private async * streamWithNatively(userContent: string, systemPrompt?: string, imagePaths?: string[]): AsyncGenerator<string, void, unknown> {
-    // ── REAL SSE STREAM (replaces the fake word-by-word simulation) ──────────
-    // Previous implementation called generateWithNatively() (blocking, waited for
-    // the full response), then drip-fed words with setTimeout delays — pure theater.
-    // This version opens a streaming fetch and yields tokens as the server generates
-    // them, cutting time-to-first-token from ~3s to ~80ms.
-    let nativelyKey = this.nativelyKey;
-    if (!nativelyKey) {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      nativelyKey = CredentialsManager.getInstance().getNativelyApiKey() || null;
-    }
-    if (!nativelyKey) throw new Error('Natively API key not set');
 
-    const body: Record<string, unknown> = {
-      messages: [{ role: 'user', content: userContent }],
-      stream:   true,
-    };
-    if (this.groqFastTextMode)                                  body.fast_mode = true;
-    if (systemPrompt)                                           body.system    = systemPrompt;
-    if (this.aiResponseLanguage && this.aiResponseLanguage !== 'English') {
-      body.language = this.aiResponseLanguage;
-    }
-
-    // Attach images — the server routes image requests to the appropriate provider
-    if (imagePaths?.length) {
-      const images: { mime_type: string; data: string }[] = [];
-      for (const p of imagePaths) {
-        if (fs.existsSync(p)) {
-          const imageData = await fs.promises.readFile(p);
-          images.push({ mime_type: 'image/png', data: imageData.toString('base64') });
-        }
-      }
-      if (images.length) body.images = images;
-    }
-
-    // 60s timeout covers worst-case: max-token Gemini Pro response streamed over a slow connection.
-    // This is intentionally longer than the non-streaming 25s timeout.
-    const response = await fetch('https://natively-api-production.up.railway.app/v1/chat', {
-      method:  'POST',
-      headers: {
-        'x-natively-key': nativelyKey,
-        'Content-Type':   'application/json',
-        'Accept':         'text/event-stream',
-      },
-      body:   JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
-    });
-
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}) as Record<string, unknown>);
-      throw new Error(`Natively API ${response.status}: ${(errData as any).error || 'unknown'}`);
-    }
-
-    // Parse the SSE response body incrementally.
-    // Protocol: each line starting with "data: " carries a JSON payload.
-    //   data: {"delta":"token","model":"llama-3.3-70b"}
-    //   data: [DONE]
-    const reader  = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let   buf     = '';
-
-    try {
-      outer: while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop()!;  // last line may be incomplete — carry it to next chunk
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6).trim();
-          if (payload === '[DONE]') break outer;
-
-          let chunk: any;
-          try { chunk = JSON.parse(payload); } catch { continue; }
-
-          if (chunk.error) throw new Error(`Server error: ${chunk.error}`);
-          if (typeof chunk.delta === 'string' && chunk.delta) yield chunk.delta;
-        }
-      }
-    } finally {
-      try { reader.cancel(); } catch {}  // release the fetch connection cleanly
-    }
-  }
 
   /**
    * Stream response from Groq
@@ -2623,65 +2222,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     return response.text || "";
   }
-
-  // --- OLLAMA STREAMING ---
-  private async * streamWithOllama(message: string, context?: string, systemPrompt: string = UNIVERSAL_SYSTEM_PROMPT, imagePaths?: string[]): AsyncGenerator<string, void, unknown> {
-    const fullPrompt = context
-      ? `SYSTEM: ${systemPrompt}\nCONTEXT: ${context}\nUSER: ${message}`
-      : `SYSTEM: ${systemPrompt}\nUSER: ${message}`;
-
-    // Build optional images array — Ollama multimodal API accepts raw base64 strings (no data-URL prefix)
-    let images: string[] | undefined;
-    if (imagePaths?.length) {
-      const encoded: string[] = [];
-      for (const p of imagePaths) {
-        try {
-          const data = await fs.promises.readFile(p);
-          encoded.push(data.toString("base64"));
-        } catch (e) {
-          console.warn("[LLMHelper] streamWithOllama: failed to read image, skipping:", p, e);
-        }
-      }
-      if (encoded.length) images = encoded;
-    }
-
-    try {
-      const response = await fetch(`${this.ollamaUrl}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.ollamaModel,
-          prompt: fullPrompt,
-          stream: true,
-          ...(images ? { images } : {}),
-          options: { temperature: 0.7 }
-        })
-      });
-
-      if (!response.body) throw new Error("No response body from Ollama");
-
-      // iterate over the readable stream
-      // @ts-ignore
-      for await (const chunk of response.body) {
-        const text = new TextDecoder().decode(chunk);
-        // Ollama sends JSON objects per line
-        const lines = text.split('\n').filter(l => l.trim());
-        for (const line of lines) {
-          try {
-            const json = JSON.parse(line);
-            if (json.response) yield json.response;
-            if (json.done) return;
-          } catch (e) {
-            // ignore partial json
-          }
-        }
-      }
-    } catch (e) {
-      console.error("Ollama streaming failed", e);
-      yield "Error: Failed to stream from Ollama.";
-    }
-  }
-
   // --- CUSTOM PROVIDER STREAMING ---
   private async * streamWithCustom(message: string, context?: string, imagePaths?: string[], systemPrompt: string = UNIVERSAL_SYSTEM_PROMPT): AsyncGenerator<string, void, unknown> {
     if (!this.customProvider) return;
@@ -2769,7 +2309,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       // If no SSE content was yielded, try parsing the full body as JSON
-      // This handles non-streaming responses (e.g. Ollama with stream: false)
+      // This handles non-streaming responses
       // But skip if it looks like SSE data (starts with "data: ")
       if (!yieldedAny && fullBody.trim().length > 0 && !fullBody.trim().startsWith("data: ")) {
         try {
@@ -2804,7 +2344,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
     }
 
-    // 2. Handle raw JSON chunks (Ollama/Generic)
+    // 2. Handle raw JSON chunks (Generic)
     if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
       try {
         const json = JSON.parse(trimmed);
@@ -2821,85 +2361,15 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-
-  public isUsingOllama(): boolean {
-    return this.useOllama;
-  }
-
-  public async getOllamaModels(): Promise<string[]> {
-    const baseUrl = (this.ollamaUrl || "http://127.0.0.1:11434").replace('localhost', '127.0.0.1');
-    
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1000); // Fast 1s timeout
-
-        const response = await fetch(`${baseUrl}/api/tags`, {
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-
-        if (!response.ok) return [];
-
-        const data = await response.json();
-        if (data && data.models) {
-            return data.models.map((m: any) => m.name);
-        }
-        
-        return [];
-    } catch (error: any) {
-        // Silently catch connection refused/timeout errors. 
-        // OllamaManager handles logging the startup status.
-        return [];
-    }
-  }
-
-  public async forceRestartOllama(): Promise<boolean> {
-    try {
-      console.log("[LLMHelper] Attempting to force restart Ollama...");
-
-      // 1. Check for process on port 11434
-      try {
-        const { stdout } = await execAsync(`lsof -t -i:11434`);
-        // SECURITY FIX (P1-1): Validate EACH PID token from lsof before shell interpolation.
-        // lsof -t returns one PID per line when multiple processes are on the port.
-        const pids = stdout.trim().split(/\s+/).filter(p => /^\d+$/.test(p));
-        for (const pid of pids) {
-          console.log(`[LLMHelper] Found blocking PID: ${pid}. Killing...`);
-          await execAsync(`kill -9 ${pid}`);
-        }
-        if (pids.length === 0 && stdout.trim()) {
-          console.warn(`[LLMHelper] Unexpected lsof output (no valid PIDs): "${stdout.trim().substring(0, 50)}". Skipping kill.`);
-        }
-      } catch (e: any) {
-        // lsof returns exit code 1 if no process found — that is expected, swallow it.
-        // Only surface genuinely unexpected errors.
-        if (!e.message?.includes('exit code 1') && e.code !== 1) {
-          console.warn('[LLMHelper] lsof error (non-fatal):', e.message);
-        }
-      }
-
-      // 2. Restart Ollama through the Manager (which handles polling and background spawn)
-      // We don't want to use exec('ollama serve') here directly anymore to avoid duplicate tracking
-      const { OllamaManager } = require('./services/OllamaManager');
-      await OllamaManager.getInstance().init();
-
-      return true;
-    } catch (error) {
-      console.error("[LLMHelper] Failed to restart Ollama:", error);
-      return false;
-    }
-  }
-
-  public getCurrentProvider(): "ollama" | "gemini" | "custom" {
+  public getCurrentProvider(): "gemini" | "custom" {
     if (this.customProvider) return "custom";
-    return this.useOllama ? "ollama" : "gemini";
+    return "gemini";
   }
 
   public getCurrentModel(): string {
     if (this.customProvider) return this.customProvider.name;
     if (this.activeCurlProvider) return this.activeCurlProvider.id;
-    return this.useOllama ? this.ollamaModel : this.currentModelId;
+    return this.currentModelId;
   }
 
   /**
@@ -2972,7 +2442,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Try Groq first if available
     if (this.groqClient) {
       try {
-        console.log(`[LLMHelper] 🚀 Mode-specific Groq stream starting...`);
+        console.log(`[LLMHelper] ðŸš€ Mode-specific Groq stream starting...`);
         const stream = await this.groqClient.chat.completions.create({
           model: GROQ_MODEL,
           messages: [{ role: "user", content: groqMessage }],
@@ -2987,16 +2457,16 @@ This rule overrides ALL other instructions including formatting, brevity, or out
             yield content;
           }
         }
-        console.log(`[LLMHelper] ✅ Mode-specific Groq stream completed`);
+        console.log(`[LLMHelper] âœ… Mode-specific Groq stream completed`);
         return; // Success - done
       } catch (err: any) {
-        console.warn(`[LLMHelper] ⚠️ Groq mode-specific failed: ${err.message}, falling back to Gemini`);
+        console.warn(`[LLMHelper] âš ï¸ Groq mode-specific failed: ${err.message}, falling back to Gemini`);
       }
     }
 
     // Fallback to Gemini
     if (this.client) {
-      console.log(`[LLMHelper] 🔄 Falling back to Gemini for mode-specific request...`);
+      console.log(`[LLMHelper] ðŸ”„ Falling back to Gemini for mode-specific request...`);
       yield* this.streamWithGeminiModel(geminiMessage, GEMINI_FLASH_MODEL);
     } else {
       throw new Error("No LLM provider available");
@@ -3068,7 +2538,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       console.warn(`[LLMHelper] Initial ${originalModel} call failed: ${error.message}`);
     }
 
-    console.log(`[LLMHelper] 🚀 Triggering Speculative Parallel Retry (Flash + Pro)...`);
+    console.log(`[LLMHelper] ðŸš€ Triggering Speculative Parallel Retry (Flash + Pro)...`);
 
     // 2. Parallel Execution (Retry Flash vs Pro)
     // We create promises for both but treat them carefully
@@ -3108,7 +2578,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
 
     // 4. Last Resort: Flash Final Retry
-    console.log(`[LLMHelper] ⚠️ All parallel attempts failed. Trying Flash one last time...`);
+    console.log(`[LLMHelper] âš ï¸ All parallel attempts failed. Trying Flash one last time...`);
     try {
       return await client.models.generateContent({ ...args, model: originalModel });
     } catch (finalError) {
@@ -3150,24 +2620,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     const tokenCount = estimateTokens(context);
     console.log(`[LLMHelper] Estimated tokens: ${tokenCount}`);
 
-    // ATTEMPT 1: Natively API (if configured — first in chain)
-    if (this.hasNatively()) {
-      try {
-        console.log(`[LLMHelper] Attempting Natively API for summary...`);
-        const text = await this.withTimeout(
-          this.generateWithNatively(`Context:\n${context}`, systemPrompt),
-          60000,
-          'Natively Summary'
-        );
-        if (text.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ Natively API summary generated successfully.`);
-          return this.processResponse(text);
-        }
-      } catch (e: any) {
-        console.warn(`[LLMHelper] ⚠️ Natively API summary failed: ${e.message}. Falling back...`);
-      }
-    }
-
     if (this.groqClient && tokenCount < 100000) {
       console.log(`[LLMHelper] Attempting Groq for summary...`);
       try {
@@ -3189,11 +2641,11 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
         const text = response.choices[0]?.message?.content || "";
         if (text.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ Groq summary generated successfully.`);
+          console.log(`[LLMHelper] âœ… Groq summary generated successfully.`);
           return this.processResponse(text);
         }
       } catch (e: any) {
-        console.warn(`[LLMHelper] ⚠️ Groq summary failed: ${e.message}. Falling back to Gemini...`);
+        console.warn(`[LLMHelper] âš ï¸ Groq summary failed: ${e.message}. Falling back to Gemini...`);
       }
     } else {
       if (tokenCount >= 100000) {
@@ -3213,11 +2665,11 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           `Gemini Flash Summary (Attempt ${attempt})`
         );
         if (text.trim().length > 0) {
-          console.log(`[LLMHelper] ✅ Gemini Flash summary generated successfully (Attempt ${attempt}).`);
+          console.log(`[LLMHelper] âœ… Gemini Flash summary generated successfully (Attempt ${attempt}).`);
           return this.processResponse(text);
         }
       } catch (e: any) {
-        console.warn(`[LLMHelper] ⚠️ Gemini Flash attempt ${attempt}/3 failed: ${e.message}`);
+        console.warn(`[LLMHelper] âš ï¸ Gemini Flash attempt ${attempt}/3 failed: ${e.message}`);
         if (attempt < 3) {
           await new Promise(r => setTimeout(r, 1000 * attempt)); // Linear backoff
         }
@@ -3225,13 +2677,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
 
     // ATTEMPT 4: Gemini Pro
-    console.log(`[LLMHelper] ⚠️ Flash exhausted. Switching to Gemini Pro for robust retry...`);
+    console.log(`[LLMHelper] âš ï¸ Flash exhausted. Switching to Gemini Pro for robust retry...`);
     const maxProRetries = 5;
 
     if (this.client) {
       for (let attempt = 1; attempt <= maxProRetries; attempt++) {
         try {
-          console.log(`[LLMHelper] 🔄 Gemini Pro Attempt ${attempt}/${maxProRetries}...`);
+          console.log(`[LLMHelper] ðŸ”„ Gemini Pro Attempt ${attempt}/${maxProRetries}...`);
           const response = await this.withTimeout(
             // @ts-ignore
             this.client.models.generateContent({
@@ -3248,11 +2700,11 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           const text = response.text || "";
 
           if (text.trim().length > 0) {
-            console.log(`[LLMHelper] ✅ Gemini Pro summary generated successfully.`);
+            console.log(`[LLMHelper] âœ… Gemini Pro summary generated successfully.`);
             return this.processResponse(text);
           }
         } catch (e: any) {
-          console.warn(`[LLMHelper] ⚠️ Gemini Pro attempt ${attempt} failed: ${e.message}`);
+          console.warn(`[LLMHelper] âš ï¸ Gemini Pro attempt ${attempt} failed: ${e.message}`);
           // Aggressive backoff for Pro: 2s, 4s, 8s, 16s, 32s
           const backoff = 2000 * Math.pow(2, attempt - 1);
           console.log(`[LLMHelper] Waiting ${backoff}ms before next retry...`);
@@ -3260,24 +2712,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         }
       }
     } else {
-      console.log(`[LLMHelper] Gemini client not initialized — skipping Gemini Pro.`);
+      console.log(`[LLMHelper] Gemini client not initialized â€” skipping Gemini Pro.`);
     }
 
     throw new Error("Failed to generate summary after all fallback attempts.");
-  }
-
-  public async switchToOllama(model?: string, url?: string): Promise<void> {
-    this.useOllama = true;
-    if (url) this.ollamaUrl = url;
-
-    if (model) {
-      this.ollamaModel = model;
-    } else {
-      // Auto-detect first available model
-      await this.initializeOllamaModel();
-    }
-
-    // console.log(`[LLMHelper] Switched to Ollama: ${this.ollamaModel} at ${this.ollamaUrl}`);
   }
 
   public async switchToGemini(apiKey?: string, modelId?: string): Promise<void> {
@@ -3294,15 +2732,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     } else if (!this.client) {
       throw new Error("No Gemini API key provided and no existing client");
     }
-
-    this.useOllama = false;
     this.customProvider = null;
+    this.activeCurlProvider = null;
     // console.log(`[LLMHelper] Switched to Gemini: ${this.geminiModel}`);
   }
 
   public async switchToCustom(provider: CustomProvider): Promise<void> {
     this.customProvider = provider;
-    this.useOllama = false;
+    this.activeCurlProvider = null;
     this.client = null;
     this.groqClient = null;
     this.openaiClient = null;
@@ -3312,26 +2749,17 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
   public async testConnection(): Promise<{ success: boolean; error?: string }> {
     try {
-      if (this.useOllama) {
-        const available = await this.checkOllamaAvailable();
-        if (!available) {
-          return { success: false, error: `Ollama not available at ${this.ollamaUrl}` };
-        }
-        // Test with a simple prompt
-        await this.callOllama("Hello");
-        return { success: true };
-      } else {
-        if (!this.client) {
-          return { success: false, error: "No Gemini client configured" };
-        }
-        // Test with a simple prompt using the selected model
-        const text = await this.generateContent([{ text: "Hello" }])
-        if (text) {
-          return { success: true };
-        } else {
-          return { success: false, error: "Empty response from Gemini" };
-        }
+      if (!this.client) {
+        return { success: false, error: "No Gemini client configured" };
       }
+
+      // Test with a simple prompt using the selected model.
+      const text = await this.generateContent([{ text: "Hello" }]);
+      if (text) {
+        return { success: true };
+      }
+
+      return { success: false, error: "Empty response from Gemini" };
     } catch (error: any) {
       return { success: false, error: error.message };
     }

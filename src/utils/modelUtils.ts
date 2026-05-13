@@ -29,7 +29,7 @@ export const STANDARD_CLOUD_MODELS: Record<string, {
     groq: {
         hasKeyCheck: (creds) => !!creds?.hasGroqKey,
         ids: ['llama-3.3-70b-versatile'],
-        names: ['Groq Llama 3.3'],
+        names: ['Grok Llama 3.3'],
         descs: ['Ultra Fast'],
         pmKey: 'groqPreferredModel'
     },

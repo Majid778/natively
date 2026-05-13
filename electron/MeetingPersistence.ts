@@ -94,7 +94,14 @@ export class MeetingPersistence {
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null
     ): Promise<void> {
         let title = "Untitled Session";
-        let summaryData: { actionItems: string[], keyPoints: string[] } = { actionItems: [], keyPoints: [] };
+        let summaryData: { overview?: string, actionItems: string[], keyPoints: string[] } = { overview: '', actionItems: [], keyPoints: [] };
+        const transcriptText = data.transcript
+            .map(segment => `${segment.speaker}: ${segment.text || ''}`.trim())
+            .filter(Boolean)
+            .join('\n');
+        const summaryInput = (data.context && data.context.trim().length > 0)
+            ? data.context
+            : transcriptText;
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
@@ -112,12 +119,17 @@ export class MeetingPersistence {
                 const titlePrompt = `Generate a concise 3-6 word title for this meeting context. Output ONLY the title text. Do not use quotes or conversational filler.`;
                 const groqTitlePrompt = GROQ_TITLE_PROMPT;
 
-                const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, data.context.substring(0, 5000), groqTitlePrompt);
+                const generatedTitle = await this.llmHelper.generateMeetingSummary(titlePrompt, summaryInput.substring(0, 5000), groqTitlePrompt);
                 if (generatedTitle) title = generatedTitle.replace(/["*]/g, '').trim();
             }
 
-            // Generate Structured Summary
-            if (data.transcript.length > 2) {
+            // Generate Structured Summary. Use transcript/context content rather than
+            // segment count because local Whisper may emit one long final segment.
+            const cleanedContext = summaryInput.trim();
+            const transcriptTextLength = transcriptText.trim().length;
+            const hasEnoughContent = cleanedContext.length >= 120 || transcriptTextLength >= 120;
+
+            if (hasEnoughContent) {
                 const summaryPrompt = `You are a silent meeting summarizer. Convert this conversation into concise internal meeting notes.
     
     RULES:
@@ -140,20 +152,27 @@ export class MeetingPersistence {
 
                 const groqSummaryPrompt = GROQ_SUMMARY_JSON_PROMPT;
 
-                const generatedSummary = await this.llmHelper.generateMeetingSummary(summaryPrompt, data.context.substring(0, 10000), groqSummaryPrompt);
+                const generatedSummary = await this.llmHelper.generateMeetingSummary(summaryPrompt, summaryInput.substring(0, 10000), groqSummaryPrompt);
 
                 if (generatedSummary) {
                     const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
                     const jsonStr = (jsonMatch[1] || generatedSummary).trim();
                     try {
                         summaryData = JSON.parse(jsonStr);
-                    } catch (e) { console.error("Failed to parse summary JSON", e); }
+                    } catch (e) {
+                        console.error("Failed to parse summary JSON", e);
+                        summaryData = this.createFallbackSummary(cleanedContext || data.transcript.map(t => t.text).join('\n'));
+                    }
                 }
             } else {
-                console.log("Transcript too short for summary generation.");
+                console.log("Transcript/context too short for summary generation.");
             }
         } catch (e) {
             console.error("Error generating meeting metadata", e);
+            const fallbackText = data.context || data.transcript.map(t => t.text).join('\n');
+            if (fallbackText.trim().length >= 120) {
+                summaryData = this.createFallbackSummary(fallbackText);
+            }
         }
 
         try {
@@ -166,7 +185,7 @@ export class MeetingPersistence {
                 title: title,
                 date: new Date().toISOString(),
                 duration: durationStr,
-                summary: "See detailed summary",
+                summary: summaryData.overview || "See detailed summary",
                 detailedSummary: summaryData,
                 transcript: data.transcript,
                 usage: data.usage,
@@ -186,6 +205,23 @@ export class MeetingPersistence {
         } catch (error) {
             console.error('[MeetingPersistence] Failed to save meeting:', error);
         }
+    }
+
+    private createFallbackSummary(context: string): { overview: string, actionItems: string[], keyPoints: string[] } {
+        const cleanedLines = context
+            .split(/\r?\n/)
+            .map(line => line.replace(/^\[[^\]]+\]:\s*/, '').trim())
+            .filter(Boolean);
+        const compactText = cleanedLines.join(' ').replace(/\s+/g, ' ').trim();
+        const overview = compactText.length > 260
+            ? `${compactText.slice(0, 257).trim()}...`
+            : compactText;
+
+        return {
+            overview: overview || 'Meeting transcript saved. Summary generation did not return usable notes.',
+            keyPoints: cleanedLines.slice(0, 6),
+            actionItems: []
+        };
     }
 
     /**

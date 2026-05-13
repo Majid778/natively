@@ -10,7 +10,10 @@ use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 use tracing::error;
-use wasapi::{get_default_device, DeviceCollection, Direction, SampleType, ShareMode, WaveFormat};
+use wasapi::{
+    deinitialize, get_default_device, initialize_mta, DeviceCollection, Direction, SampleType,
+    ShareMode, WaveFormat,
+};
 
 struct WakerState {
     shutdown: bool,
@@ -60,6 +63,7 @@ fn find_device_by_id(direction: &Direction, device_id: &str) -> Option<wasapi::D
 }
 
 pub fn list_output_devices() -> Result<Vec<(String, String)>> {
+    let com_initialized = initialize_mta().is_ok();
     let collection =
         DeviceCollection::new(&Direction::Render).map_err(|e| anyhow::anyhow!("{}", e))?;
     let count = collection
@@ -75,6 +79,9 @@ pub fn list_output_devices() -> Result<Vec<(String, String)>> {
                 list.push((id, name));
             }
         }
+    }
+    if com_initialized {
+        deinitialize();
     }
     Ok(list)
 }
@@ -137,6 +144,7 @@ impl SpeakerInput {
         init_tx: mpsc::Sender<Result<u32>>,
         device_id: Option<String>,
     ) -> Result<()> {
+        let com_initialized = initialize_mta().is_ok();
         let init_result = (|| -> Result<_> {
             let device = match device_id {
                 Some(ref id) => match find_device_by_id(&Direction::Render, id) {
@@ -157,8 +165,19 @@ impl SpeakerInput {
                 .get_mixformat()
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             let actual_rate = device_format.get_samplespersec();
-            let desired_format =
-                WaveFormat::new(32, 32, &SampleType::Float, actual_rate as usize, 1, None);
+            let channels = device_format.get_nchannels().max(1) as usize;
+            // Keep the render endpoint's real channel count for loopback. Some Windows
+            // drivers accept a forced mono format but then never deliver loopback packets.
+            // We request float samples at the device rate/channel layout and downmix below.
+            let desired_format = WaveFormat::new(
+                32,
+                32,
+                &SampleType::Float,
+                actual_rate as usize,
+                channels,
+                None,
+            );
+            let bytes_per_frame = desired_format.get_blockalign() as usize;
 
             let (_def_time, min_time) = audio_client
                 .get_periods()
@@ -184,11 +203,11 @@ impl SpeakerInput {
                 .start_stream()
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            Ok((h_event, render_client, actual_rate, audio_client))
+            Ok((h_event, render_client, actual_rate, channels, bytes_per_frame, audio_client))
         })();
 
         match init_result {
-            Ok((h_event, render_client, sample_rate, audio_client)) => {
+            Ok((h_event, render_client, sample_rate, channels, bytes_per_frame, audio_client)) => {
                 let _ = init_tx.send(Ok(sample_rate));
                 loop {
                     {
@@ -199,14 +218,7 @@ impl SpeakerInput {
                         }
                     }
 
-                    if h_event.wait_for_event(3000).is_err() {
-                        error!("Timeout error, stopping capture");
-                        break;
-                    }
-
                     let mut temp_queue = VecDeque::new();
-                    // bytes_per_frame for 32-bit float mono = 4 bytes
-                    let bytes_per_frame: usize = 4; // 32-bit float, 1 channel
                     if let Err(e) =
                         render_client.read_from_device_to_deque(bytes_per_frame, &mut temp_queue)
                     {
@@ -218,16 +230,19 @@ impl SpeakerInput {
                         continue;
                     }
 
-                    let mut samples = Vec::with_capacity(temp_queue.len() / 4);
-                    while temp_queue.len() >= 4 {
-                        let bytes = [
-                            temp_queue.pop_front().unwrap(),
-                            temp_queue.pop_front().unwrap(),
-                            temp_queue.pop_front().unwrap(),
-                            temp_queue.pop_front().unwrap(),
-                        ];
-                        let sample = f32::from_le_bytes(bytes);
-                        samples.push(sample);
+                    let mut samples = Vec::with_capacity(temp_queue.len() / bytes_per_frame);
+                    while temp_queue.len() >= bytes_per_frame {
+                        let mut mixed = 0.0_f32;
+                        for _ in 0..channels {
+                            let bytes = [
+                                temp_queue.pop_front().unwrap(),
+                                temp_queue.pop_front().unwrap(),
+                                temp_queue.pop_front().unwrap(),
+                                temp_queue.pop_front().unwrap(),
+                            ];
+                            mixed += f32::from_le_bytes(bytes);
+                        }
+                        samples.push(mixed / channels as f32);
                     }
 
                     if !samples.is_empty() {
@@ -239,11 +254,21 @@ impl SpeakerInput {
                         *ready = true;
                         cvar.notify_all();
                     }
+
+                    // WASAPI loopback can initialize successfully but not reliably signal
+                    // event callbacks on every Windows/audio-driver combination. Treat the
+                    // event as pacing only; never stop capture just because a signal timed out.
+                    if h_event.wait_for_event(50).is_err() {
+                        thread::sleep(Duration::from_millis(10));
+                    }
                 }
             }
             Err(e) => {
                 let _ = init_tx.send(Err(e));
             }
+        }
+        if com_initialized {
+            deinitialize();
         }
         Ok(())
     }

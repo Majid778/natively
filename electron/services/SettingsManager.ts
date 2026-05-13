@@ -11,7 +11,17 @@ export interface AppSettings {
     verboseLogging?: boolean;
     actionButtonMode?: 'recap' | 'brainstorm';
     groqFastTextMode?: boolean;
-    knowledgeMode?: boolean;
+    modesConfig?: {
+        modes: Array<{
+            id: string;
+            name: string;
+            prompt: string;
+            createdAt: string;
+            updatedAt: string;
+        }>;
+        activeModeId: string | null;
+    };
+    overlayOpacity?: number;
 }
 
 export class SettingsManager {

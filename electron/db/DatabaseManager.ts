@@ -306,7 +306,7 @@ export class DatabaseManager {
             this.db.pragma('user_version = 5');
         }
 
-        // Version 5 → 6: Add app_state table for KV storage (Ollama pull state, etc)
+        // Version 5 -> 6: Add app_state table for small persisted runtime state.
         if (version < 6) {
             console.log('[DatabaseManager] Applying migration v5 → v6: Add app_state table');
             this.db.exec(`
@@ -578,7 +578,7 @@ export class DatabaseManager {
     public hasVecExtension(): boolean {
         if (!this.db) return false;
         try {
-            // Check the most common dimension (Ollama 768); any may suffice
+            // Check the most common embedding dimension; any indexed vector may suffice.
             this.db.prepare("SELECT count(*) FROM vec_chunks_768 LIMIT 1").get();
             return true;
         } catch (e) {
@@ -649,6 +649,11 @@ export class DatabaseManager {
                 meeting.source || 'manual',
                 meeting.isProcessed ? 1 : 0
             );
+
+            // Placeholder saves are replaced by the final processed meeting. Clear child
+            // rows first so transcript/usage entries are not duplicated on final save.
+            this.db!.prepare('DELETE FROM transcripts WHERE meeting_id = ?').run(meeting.id);
+            this.db!.prepare('DELETE FROM ai_interactions WHERE meeting_id = ?').run(meeting.id);
 
             // 2. Insert Transcript
             if (meeting.transcript) {
@@ -785,6 +790,7 @@ export class DatabaseManager {
                 detailedSummary: summaryData.detailedSummary,
                 calendarEventId: row.calendar_event_id,
                 source: row.source as any,
+                isProcessed: row.is_processed === 1,
                 // We don't load full transcript/usage for list view to keep it light
                 transcript: [] as any[],
                 usage: [] as any[]
@@ -853,6 +859,7 @@ export class DatabaseManager {
             detailedSummary: summaryData.detailedSummary,
             calendarEventId: meetingRow.calendar_event_id,
             source: meetingRow.source,
+            isProcessed: meetingRow.is_processed === 1,
             transcript: transcript,
             usage: usage
         };

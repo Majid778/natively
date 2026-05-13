@@ -7,12 +7,6 @@ export interface AudioDeviceInfo {
 
 export interface NativeModule {
   getHardwareId(): string;
-  verifyGumroadKey(licenseKey: string): Promise<string>;
-  // Dodo Payments — all three require a binary rebuild (cargo build --release)
-  // They are optional (?) so the module loads even with a stale binary.
-  verifyDodoKey?: (licenseKey: string, deviceLabel: string) => Promise<string>;
-  validateDodoKey?: (licenseKey: string) => Promise<string>;
-  deactivateDodoKey?: (licenseKey: string, instanceId: string) => Promise<string>;
   getInputDevices(): Array<AudioDeviceInfo>;
   getOutputDevices(): Array<AudioDeviceInfo>;
   SystemAudioCapture: new (deviceId?: string | null) => {
@@ -28,16 +22,9 @@ export interface NativeModule {
 }
 
 // Hard-required: crash the module load if any of these are missing.
-// These exist in the ORIGINAL binary (pre-Dodo build).
-const REQUIRED_METHODS = ['getHardwareId', 'verifyGumroadKey', 'getInputDevices', 'getOutputDevices'];
+// These exist in the original public audio binary.
+const REQUIRED_METHODS = ['getHardwareId', 'getInputDevices', 'getOutputDevices'];
 const REQUIRED_CONSTRUCTORS = ['SystemAudioCapture', 'MicrophoneCapture'];
-// Soft-required: warn (do NOT crash) if missing.
-// All three Dodo functions require a binary rebuild (cargo build --release).
-// LicenseManager checks these individually with optional chaining (?.) and
-// degrades gracefully: falls through to Gumroad if verifyDodoKey is missing,
-// skips revocation check if validateDodoKey is missing,
-// skips server deactivation if deactivateDodoKey is missing.
-const SOFT_REQUIRED_METHODS = ['verifyDodoKey', 'validateDodoKey', 'deactivateDodoKey'];
 
 /**
  * Validates that a loaded native module conforms to the NativeModule interface.
@@ -57,19 +44,6 @@ function validateNativeModule(mod: any): asserts mod is NativeModule {
         }
     }
 
-    // Soft-required: warn, but do NOT crash.
-    // These are newly-added Dodo functions that require a binary rebuild (cargo build).
-    // The app remains fully functional for audio and Gumroad; only Dodo validate/deactivate
-    // will be unavailable until the next build ships the new binary.
-    for (const fn of SOFT_REQUIRED_METHODS) {
-        if (typeof mod[fn] !== 'function') {
-            console.warn(
-                `[nativeModuleLoader] WARNING: optional method "${fn}" not found in binary — ` +
-                `Dodo license validation/deactivation will be unavailable until binary is rebuilt.`
-            );
-        }
-    }
-
     // Functional smoke-test: actually call a cheap synchronous native function.
     // This catches the Electron asar-stub false-pass: the JS index.js stub
     // exports all the right names (passing the checks above) but its internal
@@ -84,13 +58,13 @@ function validateNativeModule(mod: any): asserts mod is NativeModule {
         result = mod.getInputDevices();
     } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        throw new Error(`NativeModule: functional smoke-test threw (${msg}) — likely loaded asar stub instead of real binary`);
+        throw new Error(`NativeModule: functional smoke-test threw (${msg}) â€” likely loaded asar stub instead of real binary`);
     }
     // Guard is OUTSIDE the try block so our throw propagates cleanly.
     if (!Array.isArray(result)) {
         throw new Error(
             `NativeModule: getInputDevices() returned ${typeof result} instead of Array` +
-            ` — likely loaded asar stub instead of real binary`
+            ` â€” likely loaded asar stub instead of real binary`
         );
     }
 }
@@ -129,13 +103,13 @@ let cached: NativeModule | null | undefined = undefined;
  * so this module is safe to import from renderer processes, workers, and tests.
  *
  * Candidate paths are tried in this order:
- *   1. Production/electron:dev — app.asar.unpacked/ via process.resourcesPath.
+ *   1. Production/electron:dev â€” app.asar.unpacked/ via process.resourcesPath.
  *      This MUST be first: in a packaged app, app.getAppPath() returns the
  *      sealed app.asar archive. Requiring a path inside app.asar causes
  *      Electron's fs interceptor to serve the JS index.js stub (not the native
  *      binary), which exports the right names but cannot dlopen the real ABI.
- *   2. Development — app.getAppPath() returns the raw project root.
- *   3. Development fallback — one level up if launched from a subdirectory.
+ *   2. Development â€” app.getAppPath() returns the raw project root.
+ *   3. Development fallback â€” one level up if launched from a subdirectory.
  *
  * The function returns null on failure rather than throwing, so the app
  * degrades gracefully (audio device enumeration returns empty arrays).
@@ -160,22 +134,22 @@ export function loadNativeModule(): NativeModule | null {
 
     const candidates: string[] = [];
 
-    // 1. Production/electron:dev — app.asar.unpacked via process.resourcesPath.
+    // 1. Production/electron:dev â€” app.asar.unpacked via process.resourcesPath.
     //    NOTE: process.resourcesPath is set in BOTH packaged apps AND when
     //    running `npm run electron:dev` (it points to the Electron binary's
     //    resources dir). The path below won't exist in electron:dev so this
     //    candidate simply fails and we fall through to #2. That is correct
-    //    behavior — the warn log is expected and harmless.
+    //    behavior â€” the warn log is expected and harmless.
     if (process.resourcesPath) {
         candidates.push(
             path.join(process.resourcesPath, 'app.asar.unpacked', 'native-module', binary)
         );
     }
 
-    // 2. Development — app.getAppPath() returns the project root directly
+    // 2. Development â€” app.getAppPath() returns the project root directly
     candidates.push(path.join(appPath, 'native-module', binary));
 
-    // 3. Development fallback — one level up if launched from a subdirectory
+    // 3. Development fallback â€” one level up if launched from a subdirectory
     candidates.push(path.join(appPath, '..', 'native-module', binary));
 
     for (const filePath of candidates) {
@@ -187,7 +161,7 @@ export function loadNativeModule(): NativeModule | null {
             return cached;
         } catch (err: unknown) {
             // Log per-path failure so developers can diagnose ABI mismatches,
-            // missing builds, or wrong paths — not just a generic "failed" message.
+            // missing builds, or wrong paths â€” not just a generic "failed" message.
             const msg = err instanceof Error ? err.message : String(err);
             console.warn(`[nativeModuleLoader] Could not load from ${filePath}: ${msg}`);
         }

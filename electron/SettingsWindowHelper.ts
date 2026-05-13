@@ -8,6 +8,8 @@ const startUrl = isDev
     ? "http://localhost:5180"
     : `file://${path.join(app.getAppPath(), "dist/index.html")}`
 
+const fallbackFileUrl = `file://${path.join(app.getAppPath(), "dist/index.html")}`;
+
 type WindowActivationOptions = {
     activate?: boolean
 }
@@ -185,12 +187,29 @@ export class SettingsWindowHelper {
         this.settingsWindow.setContentProtection(this.contentProtection);
 
         // Load with query param
+        const cacheBust = Date.now();
         const settingsUrl = isDev
-            ? `${startUrl}?window=settings`
-            : `${startUrl}?window=settings` // file url also works with search params in modern Electron
+            ? `${startUrl}?window=settings&v=${cacheBust}`
+            : `${startUrl}?window=settings&v=${cacheBust}` // file url also works with search params in modern Electron
 
-        this.settingsWindow.loadURL(settingsUrl).catch(e => {
+        this.settingsWindow.loadURL(settingsUrl).catch(async (e) => {
             console.error('[SettingsWindowHelper] Failed to load URL:', e);
+            if (isDev && this.settingsWindow && !this.settingsWindow.isDestroyed()) {
+                try {
+                    await this.settingsWindow.loadURL(`${fallbackFileUrl}?window=settings&v=${cacheBust}`);
+                    console.log('[SettingsWindowHelper] Fallback to file URL succeeded');
+                } catch (fallbackError) {
+                    console.error('[SettingsWindowHelper] Fallback to file URL failed:', fallbackError);
+                }
+            }
+        });
+        this.settingsWindow.webContents.on('render-process-gone', (_event, details) => {
+            console.error(`[SettingsWindowHelper] Settings renderer gone: reason=${details.reason} exitCode=${details.exitCode}`);
+        });
+        this.settingsWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+            if (level >= 2) {
+                console.error(`[Renderer/settings] ${sourceId}:${line} ${message}`);
+            }
         });
 
         this.settingsWindow.once('ready-to-show', () => {

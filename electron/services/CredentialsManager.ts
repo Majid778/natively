@@ -8,6 +8,16 @@ import fs from 'fs';
 import path from 'path';
 
 const CREDENTIALS_PATH = path.join(app.getPath('userData'), 'credentials.enc');
+const LEGACY_LOCAL_STT_PROVIDER = 'whisper' + 'lite';
+const FRIEND_READY_OPENROUTER_MODEL_ID = 'google/gemini-2.5-flash';
+const FRIEND_READY_OPENROUTER_PROVIDER_ID = 'openrouter-google-gemini-2-5-flash';
+const FRIEND_READY_OPENROUTER_PROVIDER_NAME = 'OpenRouter (Google Gemini 2.5 Flash)';
+const LEGACY_OPENROUTER_PROVIDER_IDS = new Set([
+    'openrouter-google-gemini-3-flash-preview',
+    'openrouter-gemini-3-flash-preview',
+    'gemini-3-flash-preview',
+]);
+export type SttProviderId = 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper';
 
 export interface CustomProvider {
     id: string;
@@ -27,13 +37,14 @@ export interface StoredCredentials {
     groqApiKey?: string;
     openaiApiKey?: string;
     claudeApiKey?: string;
+    openRouterApiKey?: string;
     googleServiceAccountPath?: string;
     customProviders?: CustomProvider[];
     curlProviders?: CurlProvider[];
     defaultModel?: string;
-    nativelyApiKey?: string;
     // STT Provider settings
-    sttProvider?: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively';
+    sttProvider?: SttProviderId | string;
+    localSttModel?: string;
     groqSttApiKey?: string;
     groqSttModel?: string;
     openAiSttApiKey?: string;
@@ -46,8 +57,6 @@ export interface StoredCredentials {
     sonioxApiKey?: string;
     sttLanguage?: string;
     aiResponseLanguage?: string;
-    // Tavily Search
-    tavilyApiKey?: string;
     // Dynamic Model Discovery – preferred models per provider
     geminiPreferredModel?: string;
     groqPreferredModel?: string;
@@ -76,6 +85,7 @@ export class CredentialsManager {
      */
     public init(): void {
         this.loadCredentials();
+        this.migrateFriendReadyDefaults();
         console.log('[CredentialsManager] Initialized');
     }
 
@@ -99,6 +109,10 @@ export class CredentialsManager {
         return this.credentials.claudeApiKey;
     }
 
+    public getOpenRouterApiKey(): string | undefined {
+        return this.credentials.openRouterApiKey;
+    }
+
     public getGoogleServiceAccountPath(): string | undefined {
         return this.credentials.googleServiceAccountPath;
     }
@@ -107,8 +121,11 @@ export class CredentialsManager {
         return this.credentials.customProviders || [];
     }
 
-    public getSttProvider(): 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively' {
-        return this.credentials.sttProvider || 'google';
+    public getSttProvider(): SttProviderId {
+        const provider = this.credentials.sttProvider || 'google';
+        if (provider === 'natively') return 'google';
+        if (provider === LEGACY_LOCAL_STT_PROVIDER) return 'local-whisper';
+        return provider as SttProviderId;
     }
 
     public getDeepgramApiKey(): string | undefined {
@@ -121,6 +138,10 @@ export class CredentialsManager {
 
     public getGroqSttModel(): string {
         return this.credentials.groqSttModel || 'whisper-large-v3-turbo';
+    }
+
+    public getLocalSttModel(): string {
+        return this.credentials.localSttModel || 'large-v3-turbo';
     }
 
     public getOpenAiSttApiKey(): string | undefined {
@@ -151,10 +172,6 @@ export class CredentialsManager {
         return this.credentials.sonioxApiKey;
     }
 
-    public getTavilyApiKey(): string | undefined {
-        return this.credentials.tavilyApiKey;
-    }
-
     public getSttLanguage(): string {
         return this.credentials.sttLanguage || 'english-us';
     }
@@ -163,12 +180,13 @@ export class CredentialsManager {
         return this.credentials.aiResponseLanguage || 'English';
     }
     public getDefaultModel(): string {
-        return this.credentials.defaultModel || 'gemini-3.1-flash-lite-preview';
+        if (this.credentials.defaultModel === 'natively') return FRIEND_READY_OPENROUTER_PROVIDER_ID;
+        if (this.credentials.defaultModel && LEGACY_OPENROUTER_PROVIDER_IDS.has(this.credentials.defaultModel)) {
+            return FRIEND_READY_OPENROUTER_PROVIDER_ID;
+        }
+        return this.credentials.defaultModel || FRIEND_READY_OPENROUTER_PROVIDER_ID;
     }
 
-    public getNativelyApiKey(): string | undefined {
-        return this.credentials.nativelyApiKey;
-    }
 
     public getAllCredentials(): StoredCredentials {
         return { ...this.credentials };
@@ -202,16 +220,22 @@ export class CredentialsManager {
         console.log('[CredentialsManager] Claude API Key updated');
     }
 
+    public setOpenRouterApiKey(key: string): void {
+        this.credentials.openRouterApiKey = key;
+        this.saveCredentials();
+        console.log('[CredentialsManager] OpenRouter API Key updated');
+    }
+
     public setGoogleServiceAccountPath(filePath: string): void {
         this.credentials.googleServiceAccountPath = filePath;
         this.saveCredentials();
         console.log('[CredentialsManager] Google Service Account path updated');
     }
 
-    public setSttProvider(provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively'): void {
-        this.credentials.sttProvider = provider;
+    public setSttProvider(provider: SttProviderId | string): void {
+        this.credentials.sttProvider = provider === LEGACY_LOCAL_STT_PROVIDER ? 'local-whisper' : provider;
         this.saveCredentials();
-        console.log(`[CredentialsManager] STT Provider set to: ${provider}`);
+        console.log(`[CredentialsManager] STT Provider set to: ${this.credentials.sttProvider}`);
     }
 
     public setDeepgramApiKey(key: string): void {
@@ -236,6 +260,12 @@ export class CredentialsManager {
         this.credentials.groqSttModel = model;
         this.saveCredentials();
         console.log(`[CredentialsManager] Groq STT Model set to: ${model}`);
+    }
+
+    public setLocalSttModel(model: string): void {
+        this.credentials.localSttModel = model;
+        this.saveCredentials();
+        console.log(`[CredentialsManager] Local STT Model set to: ${model}`);
     }
 
     public setElevenLabsApiKey(key: string): void {
@@ -274,13 +304,6 @@ export class CredentialsManager {
         console.log('[CredentialsManager] Soniox API Key updated');
     }
 
-    public setTavilyApiKey(key: string): void {
-        // Store undefined (not empty string) when removing, so hasKey() checks stay consistent
-        this.credentials.tavilyApiKey = key.trim() || undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Tavily API Key updated');
-    }
-
     public setSttLanguage(language: string): void {
         this.credentials.sttLanguage = language;
         this.saveCredentials();
@@ -296,46 +319,6 @@ export class CredentialsManager {
         this.credentials.defaultModel = model;
         this.saveCredentials();
         console.log(`[CredentialsManager] Default Model set to: ${model}`);
-    }
-
-    public setNativelyApiKey(key: string): void {
-        const trimmed = key.trim();
-        this.credentials.nativelyApiKey = trimmed || undefined;
-
-        if (trimmed) {
-            // Auto-promote natively to default model unless user already chose a non-Gemini/Groq model
-            const current = this.credentials.defaultModel || '';
-            const isAutoDefault = !current
-                || current.startsWith('gemini-')
-                || current.startsWith('llama-')
-                || current.startsWith('mixtral-')
-                || current.startsWith('gemma-')
-                || current === 'gemini'
-                || current === 'llama';
-            if (isAutoDefault) {
-                this.credentials.defaultModel = 'natively';
-                console.log('[CredentialsManager] Auto-set default model to natively');
-            }
-
-            // Auto-promote natively STT if still on the default Google STT
-            if (!this.credentials.sttProvider || this.credentials.sttProvider === 'google') {
-                this.credentials.sttProvider = 'natively';
-                console.log('[CredentialsManager] Auto-set STT provider to natively');
-            }
-        } else {
-            // Key cleared — revert natively-auto-set defaults back to safe fallbacks
-            if (this.credentials.defaultModel === 'natively') {
-                this.credentials.defaultModel = 'gemini-3.1-flash-lite-preview';
-                console.log('[CredentialsManager] Natively key cleared — reset default model to Gemini Flash');
-            }
-            if (this.credentials.sttProvider === 'natively') {
-                this.credentials.sttProvider = 'google';
-                console.log('[CredentialsManager] Natively key cleared — reset STT provider to Google');
-            }
-        }
-
-        this.saveCredentials();
-        console.log('[CredentialsManager] Natively API Key updated');
     }
 
     public getPreferredModel(provider: 'gemini' | 'groq' | 'openai' | 'claude'): string | undefined {
@@ -423,6 +406,64 @@ export class CredentialsManager {
         }
         this.credentials = {};
         console.log('[CredentialsManager] Memory scrubbed');
+    }
+
+    private migrateFriendReadyDefaults(): void {
+        let changed = false;
+
+        if (this.credentials.openRouterApiKey) {
+            const provider = this.buildFriendReadyOpenRouterProvider(this.credentials.openRouterApiKey);
+            if (!this.credentials.customProviders) {
+                this.credentials.customProviders = [];
+            }
+
+            const providerIndex = this.credentials.customProviders.findIndex(p => p.id === FRIEND_READY_OPENROUTER_PROVIDER_ID);
+            if (providerIndex >= 0) {
+                const existing = this.credentials.customProviders[providerIndex] as any;
+                if (
+                    existing.name !== provider.name ||
+                    existing.curlCommand !== provider.curlCommand ||
+                    existing.responsePath !== provider.responsePath
+                ) {
+                    this.credentials.customProviders[providerIndex] = provider as any;
+                    changed = true;
+                }
+            } else {
+                this.credentials.customProviders.push(provider as any);
+                changed = true;
+            }
+
+            if (
+                !this.credentials.defaultModel ||
+                this.credentials.defaultModel === 'natively' ||
+                LEGACY_OPENROUTER_PROVIDER_IDS.has(this.credentials.defaultModel)
+            ) {
+                this.credentials.defaultModel = FRIEND_READY_OPENROUTER_PROVIDER_ID;
+                changed = true;
+            }
+        }
+
+        if (this.credentials.deepgramApiKey) {
+            const currentProvider = this.credentials.sttProvider;
+            if (!currentProvider || currentProvider === 'google' || currentProvider === 'natively' || currentProvider === LEGACY_LOCAL_STT_PROVIDER || currentProvider === 'local-whisper') {
+                this.credentials.sttProvider = 'deepgram';
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            this.saveCredentials();
+            console.log('[CredentialsManager] Migrated provider defaults to OpenRouter Gemini 2.5 Flash and Deepgram.');
+        }
+    }
+
+    private buildFriendReadyOpenRouterProvider(apiKey: string): CurlProvider {
+        return {
+            id: FRIEND_READY_OPENROUTER_PROVIDER_ID,
+            name: FRIEND_READY_OPENROUTER_PROVIDER_NAME,
+            curlCommand: `curl https://openrouter.ai/api/v1/chat/completions -H "Authorization: Bearer ${apiKey}" -H "Content-Type: application/json" -H "X-Title: Natively" -d '{"model":"${FRIEND_READY_OPENROUTER_MODEL_ID}","messages":[{"role":"user","content":"{{TEXT}}"}],"temperature":0.2}'`,
+            responsePath: 'choices[0].message.content',
+        };
     }
 
     // =========================================================================

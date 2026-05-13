@@ -2,7 +2,7 @@
   "name": "natively",
   "version": "2.2.0",
   "main": "dist-electron/electron/main.js",
-  "description": "Natively is a meeting notes app that uses AI to generate notes from your meetings.",
+  "description": "A friend-ready AI meeting copilot with OpenRouter text AI and Deepgram transcription.",
   "scripts": {
     "clean": "rimraf dist dist-electron",
     "dev": "vite",
@@ -17,19 +17,25 @@
     "watch": "tsc -p electron/tsconfig.json --watch",
     "start": "npm run app:dev",
     "dist": "npm run app:build",
-    "build:native": "node scripts/build-native.js"
+    "build:native": "node scripts/build-native.js",
+    "dist:win": "npm run build && npm run build:electron && npm run build:native && electron-builder --win nsis portable --x64 --publish never",
+    "dist:win:dir": "npm run build && npm run build:electron && npm run build:native && electron-builder --win dir --x64 --publish never"
   },
   "build": {
     "generateUpdatesFilesForAllChannels": true,
-    "appId": "com.electron.meeting-notes",
+    "appId": "dev.natively.oss",
     "afterPack": "./scripts/ad-hoc-sign.js",
-    "productName": "Natively",
+    "productName": "Natively OSS",
     "files": [
       "dist",
       "dist-electron",
       "native-module",
       "package.json",
       "node_modules",
+      "!**/.env",
+      "!**/.env.*",
+      "!**/.codex-logs/**",
+      "!**/*.log",
       "!**/native-module/target",
       "!**/native-module/src",
       "!**/native-module/.cargo"
@@ -87,8 +93,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "ia32"
+            "x64"
           ]
         },
         {
@@ -99,7 +104,9 @@
         }
       ],
       "icon": "assets/icons/win/icon.ico",
-      "requestedExecutionLevel": "asInvoker"
+      "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": false,
+      "artifactName": "${productName}-${version}-portable.${ext}"
     },
     "linux": {
       "target": [
@@ -129,15 +136,15 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "evinjohnn",
-        "repo": "natively-cluely-ai-assistant",
+        "owner": "YOUR_GITHUB_USERNAME",
+        "repo": "natively-oss",
         "releaseType": "release"
       }
     ]
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "AGPL-3.0-only",
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
     "@electron/rebuild": "^4.0.3",
@@ -185,7 +192,6 @@
     "@grpc/proto-loader": "^0.8.0",
     "@radix-ui/react-dialog": "^1.1.2",
     "@radix-ui/react-toast": "^1.2.2",
-    "@tavily/core": "^0.7.2",
     "@types/keytar": "^4.4.0",
     "@types/three": "^0.182.0",
     "@xenova/transformers": "^2.17.2",

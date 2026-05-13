@@ -17,6 +17,8 @@ const startUrl = isDev
   ? "http://localhost:5180"
   : `file://${path.join(__dirname, "../../dist/index.html")}`
 
+const fallbackFileUrl = `file://${path.join(__dirname, "../../dist/index.html")}`;
+
 export class WindowHelper {
   private launcherWindow: BrowserWindow | null = null
   private overlayWindow: BrowserWindow | null = null
@@ -31,6 +33,7 @@ export class WindowHelper {
   private appState: AppState
   private contentProtection: boolean = false
   private opacityTimeout: NodeJS.Timeout | null = null
+  private overlayVisibleOpacity: number = 1
 
   // Initialize with explicit number type and 0 value
   private screenWidth: number = 0
@@ -61,6 +64,22 @@ export class WindowHelper {
   public setContentProtection(enable: boolean): void {
     this.contentProtection = enable
     this.applyContentProtection(enable)
+  }
+
+  private clampOverlayOpacity(opacity: number): number {
+    return Math.min(1.0, Math.max(0.35, opacity));
+  }
+
+  public setOverlayOpacity(opacity: number): void {
+    const clamped = this.clampOverlayOpacity(opacity);
+    this.overlayVisibleOpacity = clamped;
+    if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
+      this.overlayWindow.setOpacity(clamped);
+    }
+  }
+
+  public getOverlayOpacity(): number {
+    return this.overlayVisibleOpacity;
   }
 
   private applyContentProtection(enable: boolean): void {
@@ -215,12 +234,32 @@ export class WindowHelper {
 
     this.launcherWindow.setContentProtection(this.contentProtection)
 
-    this.launcherWindow.loadURL(`${startUrl}?window=launcher`)
+    const cacheBust = Date.now();
+
+    this.launcherWindow.loadURL(`${startUrl}?window=launcher&v=${cacheBust}`)
       .then(() => console.log('[WindowHelper] loadURL success'))
-      .catch((e) => { console.error("[WindowHelper] Failed to load URL:", e) })
+      .catch(async (e) => {
+        console.error("[WindowHelper] Failed to load launcher URL:", e);
+        if (isDev && this.launcherWindow && !this.launcherWindow.isDestroyed()) {
+          try {
+            await this.launcherWindow.loadURL(`${fallbackFileUrl}?window=launcher&v=${cacheBust}`);
+            console.log('[WindowHelper] Launcher fallback to file URL succeeded');
+          } catch (fallbackError) {
+            console.error('[WindowHelper] Launcher fallback failed:', fallbackError);
+          }
+        }
+      })
 
     this.launcherWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
       console.error(`[WindowHelper] did-fail-load: ${errorCode} ${errorDescription}`);
+    });
+    this.launcherWindow.webContents.on('render-process-gone', (_event, details) => {
+      console.error(`[WindowHelper] Launcher renderer gone: reason=${details.reason} exitCode=${details.exitCode}`);
+    });
+    this.launcherWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      if (level >= 2) {
+        console.error(`[Renderer/launcher] ${sourceId}:${line} ${message}`);
+      }
     });
 
     // if (isDev) {
@@ -241,8 +280,10 @@ export class WindowHelper {
       },
       show: false,
       frame: false, // Frameless
-      transparent: true,
-      backgroundColor: "#00000000",
+      // Windows transparent frameless overlays can become visually invisible on some
+      // GPU/driver combinations. Use an opaque fallback there so the HUD always paints.
+      transparent: process.platform !== "win32",
+      backgroundColor: process.platform === "win32" ? "#171a20" : "#00000000",
       alwaysOnTop: true,
       focusable: true,
       resizable: false, // Enforce automatic resizing only
@@ -253,16 +294,35 @@ export class WindowHelper {
 
     this.overlayWindow = new BrowserWindow(overlaySettings)
     this.overlayWindow.setContentProtection(this.contentProtection)
+    this.overlayWindow.setOpacity(this.overlayVisibleOpacity)
 
     if (process.platform === "darwin") {
       this.overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
       this.overlayWindow.setHiddenInMissionControl(true)
       this.overlayWindow.setAlwaysOnTop(true, "floating")
+    } else if (process.platform === "win32") {
+      this.overlayWindow.setAlwaysOnTop(true, "screen-saver")
     }
 
-    this.overlayWindow.loadURL(`${startUrl}?window=overlay`).catch(e => {
+    this.overlayWindow.loadURL(`${startUrl}?window=overlay&v=${cacheBust}`).catch(async (e) => {
         console.error('[WindowHelper] Failed to load Overlay URL:', e);
+        if (isDev && this.overlayWindow && !this.overlayWindow.isDestroyed()) {
+          try {
+            await this.overlayWindow.loadURL(`${fallbackFileUrl}?window=overlay&v=${cacheBust}`);
+            console.log('[WindowHelper] Overlay fallback to file URL succeeded');
+          } catch (fallbackError) {
+            console.error('[WindowHelper] Overlay fallback failed:', fallbackError);
+          }
+        }
     })
+    this.overlayWindow.webContents.on('render-process-gone', (_event, details) => {
+      console.error(`[WindowHelper] Overlay renderer gone: reason=${details.reason} exitCode=${details.exitCode}`);
+    });
+    this.overlayWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      if (level >= 2) {
+        console.error(`[Renderer/overlay] ${sourceId}:${line} ${message}`);
+      }
+    });
 
     // --- 3. Startup Sequence ---
     this.launcherWindow.once('ready-to-show', () => {
@@ -445,13 +505,13 @@ export class WindowHelper {
     if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return;
 
     // Restore opacity in case it was zeroed by hideMainWindow() before a screenshot.
-    this.overlayWindow.setOpacity(1);
+    this.overlayWindow.setOpacity(this.overlayVisibleOpacity);
 
     // Re-assert z-order on Windows before showing — same DWM demotion risk as
     // switchToOverlay(). Must come before show()/showInactive() so the window
     // lands at the correct level on first paint (issue #136).
     if (process.platform === 'win32') {
-      this.overlayWindow.setAlwaysOnTop(true, 'floating');
+      this.overlayWindow.setAlwaysOnTop(true, process.platform === 'win32' ? 'screen-saver' : 'floating');
     }
 
     if (this.appState.getOverlayMousePassthrough()) {
@@ -516,7 +576,7 @@ export class WindowHelper {
   public switchToOverlay(inactive?: boolean): void {
     console.log(`[WindowHelper] Switching to OVERLAY (inactive: ${!!inactive})`);
     this.currentWindowMode = 'overlay';
-    KeybindManager.getInstance().setMode('overlay'); // Adapted from public PR #123 — verify premium interaction
+    KeybindManager.getInstance().setMode('overlay'); // Adapted from public PR #123 — verify overlay interaction
 
     // Tell the overlay renderer to expand to full size (e.g. after being minimised)
     this.overlayWindow?.webContents.send('ensure-expanded');
@@ -530,25 +590,32 @@ export class WindowHelper {
             height: Math.max(this.overlayBounds.height, 216)
           }
         : null;
-      const workArea = this.getDisplayWorkArea(savedBounds ?? currentBounds);
+      // Prefer the launcher's display when switching from launcher -> overlay.
+      // This keeps the HUD on the same monitor where the user clicked "Start Natively".
+      const launcherBounds = this.launcherWindow && !this.launcherWindow.isDestroyed()
+        ? this.launcherWindow.getBounds()
+        : null;
+      const targetDisplay = launcherBounds
+        ? screen.getDisplayMatching(launcherBounds)
+        : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+      const workArea = targetDisplay.workArea;
       const maxAllowedWidth = Math.floor(workArea.width * 0.9);
       const maxAllowedHeight = Math.floor(workArea.height * 0.9);
-      const targetBounds = savedBounds
-        ? {
-            x: Math.min(Math.max(savedBounds.x, workArea.x), workArea.x + workArea.width - Math.min(savedBounds.width, maxAllowedWidth)),
-            y: Math.min(Math.max(savedBounds.y, workArea.y), workArea.y + workArea.height - Math.min(savedBounds.height, maxAllowedHeight)),
-            width: Math.min(savedBounds.width, maxAllowedWidth),
-            height: Math.min(savedBounds.height, maxAllowedHeight)
-          }
-        : {
-            x: Math.floor(workArea.x + (workArea.width - 600) / 2),
-            y: Math.floor(workArea.y + (workArea.height - 600) / 2),
-            width: 600,
-            height: Math.max(Math.min(currentBounds.height, maxAllowedHeight), 216)
-          };
+      const basisBounds = savedBounds ?? currentBounds;
+      const targetWidth = Math.min(Math.max(basisBounds.width || 600, 700), maxAllowedWidth);
+      const targetHeight = Math.min(Math.max(basisBounds.height || 216, 240), maxAllowedHeight);
+      const preferredTopY = workArea.y + Math.round(workArea.height * 0.12);
+      const clampedY = Math.min(Math.max(preferredTopY, workArea.y), workArea.y + workArea.height - targetHeight);
+      const targetBounds = {
+        x: Math.floor(workArea.x + (workArea.width - targetWidth) / 2),
+        y: Math.floor(clampedY),
+        width: targetWidth,
+        height: targetHeight
+      };
 
       this.overlayWindow.setBounds(targetBounds);
       this.overlayBounds = this.overlayWindow.getBounds();
+      console.log('[WindowHelper] Overlay target bounds:', JSON.stringify(targetBounds));
 
       // Restore opacity before showing (it may have been zeroed by hideMainWindow).
       if (process.platform === 'win32' && this.contentProtection) {
@@ -561,15 +628,17 @@ export class WindowHelper {
         if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
         this.opacityTimeout = setTimeout(() => {
           if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
-            this.overlayWindow.setOpacity(1);
+            this.overlayWindow.setOpacity(this.overlayVisibleOpacity);
             // Re-assert z-order on Windows — DWM can silently demote the HWND after hide/show
-            this.overlayWindow.setAlwaysOnTop(true, 'floating');
+            this.overlayWindow.setAlwaysOnTop(true, process.platform === 'win32' ? 'screen-saver' : 'floating');
+            this.overlayWindow.moveTop();
             if (!inactive) this.overlayWindow.focus();
+            console.log(`[WindowHelper] Overlay reveal check (shield path): visible=${this.overlayWindow.isVisible()} focused=${this.overlayWindow.isFocused()} opacity=${this.overlayWindow.getOpacity()}`);
           }
         }, 60);
       } else {
         // Restore opacity (may have been zeroed pre-screenshot by hideMainWindow)
-        this.overlayWindow.setOpacity(1);
+        this.overlayWindow.setOpacity(this.overlayVisibleOpacity);
         this.overlayWindow.setContentProtection(this.contentProtection);
         // Re-assert z-order BEFORE show on Windows — DWM processes setAlwaysOnTop
         // synchronously, so calling it before show() ensures the window lands at the
@@ -578,13 +647,27 @@ export class WindowHelper {
         // Skipped on macOS — calling setAlwaysOnTop triggers [NSApp activate] which
         // steals focus from Zoom/browser even when showInactive() was used.
         if (process.platform === 'win32') {
-          this.overlayWindow.setAlwaysOnTop(true, 'floating');
+          this.overlayWindow.setAlwaysOnTop(true, 'screen-saver');
         }
         if (inactive) this.overlayWindow.showInactive(); else this.overlayWindow.show();
+        this.overlayWindow.moveTop();
         // Only grab focus for explicit user-initiated shows (not shortcut/ghost shows)
         if (!inactive) this.overlayWindow.focus();
+        console.log(`[WindowHelper] Overlay reveal check: visible=${this.overlayWindow.isVisible()} focused=${this.overlayWindow.isFocused()} opacity=${this.overlayWindow.getOpacity()}`);
       }
       this.isWindowVisible = true;
+
+      // Final safety net: if the window got hidden/demoted by a race, force it back.
+      setTimeout(() => {
+        if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return;
+        if (!this.overlayWindow.isVisible()) {
+          this.overlayWindow.setOpacity(this.overlayVisibleOpacity);
+          this.overlayWindow.showInactive();
+        }
+        this.overlayWindow.setAlwaysOnTop(true, process.platform === 'win32' ? 'screen-saver' : 'floating');
+        this.overlayWindow.moveTop();
+        console.log(`[WindowHelper] Overlay post-show verification: visible=${this.overlayWindow.isVisible()} focused=${this.overlayWindow.isFocused()} opacity=${this.overlayWindow.getOpacity()}`);
+      }, 180);
     }
 
     // Hide Launcher SECOND
@@ -596,7 +679,7 @@ export class WindowHelper {
   public switchToLauncher(inactive?: boolean): void {
     console.log(`[WindowHelper] Switching to LAUNCHER (inactive: ${!!inactive})`);
     this.currentWindowMode = 'launcher';
-    KeybindManager.getInstance().setMode('launcher'); // Adapted from public PR #123 — verify premium interaction
+    KeybindManager.getInstance().setMode('launcher'); // Adapted from public PR #123 — verify overlay interaction
 
     // Show Launcher FIRST
     if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {

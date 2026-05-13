@@ -26,7 +26,7 @@ pub const VAD_END_RMS: f32 = 100.0; // Speech end threshold (~-50dBFS)
 pub const VAD_PREROLL_CHUNKS: usize = 3;
 
 /// VAD hangover duration in milliseconds
-pub const VAD_HANGOVER_MS: u128 = 500;
+pub const VAD_HANGOVER_MS: u128 = 220;
 
 /// DSP thread poll interval in milliseconds (fallback timeout)
 /// Primary wakeup is via Condvar signal from audio callbacks.

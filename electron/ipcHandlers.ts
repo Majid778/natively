@@ -1,6 +1,7 @@
 // ipcHandlers.ts
 
 import { app, ipcMain, shell, dialog, desktopCapturer, systemPreferences, BrowserWindow, screen } from "electron"
+import type { OpenDialogOptions } from "electron"
 import { AppState } from "./main"
 import { GEMINI_FLASH_MODEL } from "./IntelligenceManager"
 import { DatabaseManager } from "./db/DatabaseManager"; // Import Database Manager
@@ -10,6 +11,7 @@ import { AudioDevices } from "./audio/AudioDevices";
 
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
+import { WhisperCppManager } from "./services/WhisperCppManager";
 
 export function initializeIpcHandlers(appState: AppState): void {
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
@@ -43,63 +45,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch (err: any) {
       console.error("[IPC] test-release-fetch failed:", err);
       return { success: false, error: err.message };
-    }
-  });
-
-  safeHandle("license:activate", async (event, key: string) => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return await LicenseManager.getInstance().activateLicense(key);
-    } catch (err: any) {
-      // Only show generic message if the premium module itself is missing.
-      // activateLicense() returns {success:false, error} for all expected failures
-      // (bad key, network error, etc.) — it should never throw in normal operation.
-      console.error('[IPC] license:activate unexpected error:', err);
-      return { success: false, error: 'Premium features not available in this build.' };
-    }
-  });
-  safeHandle("license:check-premium", async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return LicenseManager.getInstance().isPremium();
-    } catch {
-      return false;
-    }
-  });
-  // Async variant: performs Dodo server-side revocation check on startup.
-  // Returns false only if the server definitively revokes the key.
-  // Network errors fail-open (returns cached sync result).
-  safeHandle("license:check-premium-async", async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return await LicenseManager.getInstance().isPremiumAsync();
-    } catch {
-      return false;
-    }
-  });
-  safeHandle("license:deactivate", async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      // deactivate() is async — it calls the Dodo server to free the activation slot
-      // before removing the local license file. Must be awaited.
-      await LicenseManager.getInstance().deactivate();
-      // Auto-disable knowledge mode when license is removed
-      try {
-        const orchestrator = appState.getKnowledgeOrchestrator();
-        if (orchestrator) {
-          orchestrator.setKnowledgeMode(false);
-          console.log('[IPC] Knowledge mode auto-disabled due to license deactivation');
-        }
-      } catch (e) { /* ignore */ }
-    } catch { /* LicenseManager not available */ }
-    return { success: true };
-  });
-  safeHandle("license:get-hardware-id", async () => {
-    try {
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      return LicenseManager.getInstance().getHardwareId();
-    } catch {
-      return 'unavailable';
     }
   });
 
@@ -163,12 +108,17 @@ export function initializeIpcHandlers(appState: AppState): void {
       ) {
         // EC-05 fix: launcher window resize events were previously silently ignored.
         // Log them so that if the launcher ever sends this IPC it's visible in logs.
-        console.log(`[IPC] update-content-dimensions: launcher window resize request ${width}x${height} (ignored — launcher has fixed dimensions)`);
+        console.log(`[IPC] update-content-dimensions: launcher window resize request ${width}x${height} (ignored â€” launcher has fixed dimensions)`);
       }
     }
   )
 
   safeHandle("set-window-mode", async (event, mode: 'launcher' | 'overlay', inactive?: boolean) => {
+    if (mode === 'overlay' && !appState.getIsMeetingActive()) {
+      console.warn('[IPC] Ignoring overlay mode request while no meeting is active.');
+      return { success: false, error: 'Meeting is not active.' };
+    }
+
     appState.getWindowHelper().setWindowMode(mode, inactive);
     return { success: true };
   })
@@ -251,7 +201,13 @@ export function initializeIpcHandlers(appState: AppState): void {
   })
 
   safeHandle("show-overlay", async () => {
+    if (!appState.getIsMeetingActive()) {
+      console.warn('[IPC] Ignoring show-overlay request while no meeting is active.');
+      return { success: false, error: 'Meeting is not active.' };
+    }
+
     appState.getWindowHelper().showOverlay();
+    return { success: true };
   })
 
   safeHandle("hide-overlay", async () => {
@@ -273,31 +229,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   })
 
-  // Donation IPC Handlers
-  safeHandle("get-donation-status", async () => {
-    const { DonationManager } = require('./DonationManager');
-    const manager = DonationManager.getInstance();
-    return {
-      shouldShow: manager.shouldShowToaster(),
-      hasDonated: manager.getDonationState().hasDonated,
-      lifetimeShows: manager.getDonationState().lifetimeShows
-    };
-  });
 
-  safeHandle("mark-donation-toast-shown", async () => {
-    const { DonationManager } = require('./DonationManager');
-    DonationManager.getInstance().markAsShown();
-    return { success: true };
-  });
-
-  safeHandle("set-donation-complete", async () => {
-    const { DonationManager } = require('./DonationManager');
-    DonationManager.getInstance().setHasDonated(true);
-    return { success: true };
-  });
-
-
-  // Generate suggestion from transcript - Natively-style text-only reasoning
+  // Generate suggestion from transcript - live-assistant style text-only reasoning
   safeHandle("generate-suggestion", async (event, context: string, lastQuestion: string) => {
     try {
       const suggestion = await appState.processingHelper.getLLMHelper().generateSuggestion(context, lastQuestion)
@@ -310,6 +243,10 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   safeHandle("finalize-mic-stt", async () => {
     appState.finalizeMicSTT();
+  });
+
+  safeHandle("force-end-sentence", async () => {
+    appState.forceEndSentenceNow();
   });
 
   // IPC handler for analyzing image from file path
@@ -375,12 +312,12 @@ export function initializeIpcHandlers(appState: AppState): void {
   // that a newer stream has taken over.
   let _chatStreamId = 0;
 
-  safeHandle("gemini-chat-stream", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean, ignoreKnowledgeMode?: boolean }) => {
+  safeHandle("gemini-chat-stream", async (event, message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => {
     try {
       console.log("[IPC] gemini-chat-stream started using LLMHelper.streamChat");
       const llmHelper = appState.processingHelper.getLLMHelper();
 
-      // Claim a new stream ID — any prior stream will detect this and stop emitting.
+      // Claim a new stream ID â€” any prior stream will detect this and stop emitting.
       const myStreamId = ++_chatStreamId;
 
       // Update IntelligenceManager with USER message immediately
@@ -411,7 +348,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       try {
         // USE streamChat which handles routing
-        const stream = llmHelper.streamChat(message, imagePaths, context, options?.skipSystemPrompt ? "" : undefined, options?.ignoreKnowledgeMode);
+        const stream = llmHelper.streamChat(message, imagePaths, context, options?.skipSystemPrompt ? "" : undefined);
 
         for await (const token of stream) {
           // Bail if a newer stream has taken over (user triggered a new request)
@@ -556,7 +493,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     return appState.getUndetectable()
   })
 
-  // Adapted from public PR #113 — verify premium interaction
+  // Adapted from public PR #113 â€” verify overlay interaction
   safeHandle("set-overlay-mouse-passthrough", async (_, enabled: boolean) => {
     appState.setOverlayMousePassthrough(enabled)
     return { success: true }
@@ -608,70 +545,11 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       return {
         provider: llmHelper.getCurrentProvider(),
-        model: llmHelper.getCurrentModel(),
-        isOllama: llmHelper.isUsingOllama()
+        model: llmHelper.getCurrentModel()
       };
     } catch (error: any) {
       // console.error("Error getting current LLM config:", error);
       throw error;
-    }
-  });
-
-  safeHandle("get-available-ollama-models", async () => {
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      const models = await llmHelper.getOllamaModels();
-      return models;
-    } catch (error: any) {
-      // console.error("Error getting Ollama models:", error);
-      throw error;
-    }
-  });
-
-  safeHandle("switch-to-ollama", async (_, model?: string, url?: string) => {
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      await llmHelper.switchToOllama(model, url);
-      return { success: true };
-    } catch (error: any) {
-      // console.error("Error switching to Ollama:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("force-restart-ollama", async () => {
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      const success = await llmHelper.forceRestartOllama();
-      return { success };
-    } catch (error: any) {
-      console.error("Error force restarting Ollama:", error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle('restart-ollama', async () => {
-    try {
-      // First try to kill it if it's running
-      await appState.processingHelper.getLLMHelper().forceRestartOllama();
-      
-      // The forceRestartOllama now calls OllamaManager.getInstance().init() internally
-      // so we don't need to do it again here.
-      
-      return true;
-    } catch (error: any) {
-      console.error("[IPC restart-ollama] Failed to restart:", error);
-      return false;
-    }
-  });
-
-  safeHandle("ensure-ollama-running", async () => {
-    try {
-      const { OllamaManager } = require('./services/OllamaManager');
-      await OllamaManager.getInstance().init();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, message: error.message };
     }
   });
 
@@ -780,59 +658,82 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
-  safeHandle("set-natively-api-key", async (_, apiKey: string) => {
+  safeHandle("set-openrouter-api-key", async (_, apiKey: string) => {
     try {
+      const key = typeof apiKey === 'string' ? apiKey.trim() : '';
       const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      const prevSttProvider = cm.getSttProvider();
-      cm.setNativelyApiKey(apiKey);
-
-      // Update LLMHelper immediately (same pattern as other provider keys)
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      llmHelper.setNativelyKey(apiKey || null);
-
-      // Sync the model into LLMHelper and notify the UI whenever the effective default changed
-      const defaultModel = cm.getDefaultModel();
-      const providers = [...(cm.getCurlProviders() || []), ...(cm.getCustomProviders() || [])];
-      llmHelper.setModel(defaultModel, providers);
-      BrowserWindow.getAllWindows().forEach(win => {
-        if (!win.isDestroyed()) win.webContents.send('model-changed', defaultModel);
-      });
-
-      // If setNativelyApiKey auto-promoted the STT provider to 'natively', reconfigure
-      // the audio pipeline immediately — without this, the in-memory pipeline still uses
-      // the old STT provider (e.g. Google) until the app restarts.
-      const newSttProvider = cm.getSttProvider();
-      if (newSttProvider !== prevSttProvider) {
-        console.log(`[IPC] set-natively-api-key: STT provider changed ${prevSttProvider} → ${newSttProvider}, reconfiguring pipeline`);
-        await appState.reconfigureSttProvider();
-      }
-
+      CredentialsManager.getInstance().setOpenRouterApiKey(key);
       return { success: true };
     } catch (error: any) {
-      console.error("Error saving Natively API key:", error);
+      console.error("Error saving OpenRouter API key:", error);
       return { success: false, error: error.message };
     }
   });
 
-  safeHandle("get-natively-usage", async () => {
-    try {
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const key = CredentialsManager.getInstance().getNativelyApiKey();
-      if (!key) return { ok: false, error: 'no_key' };
+  safeHandle("validate-openrouter-key", async (_, apiKey: string) => {
+    const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+    if (!key) {
+      return { success: false, error: 'OpenRouter API key is required.' };
+    }
+    if (!key.startsWith('sk-or-v1-')) {
+      return { success: false, error: 'OpenRouter keys should start with "sk-or-v1-".' };
+    }
 
-      const res = await fetch('https://natively-api-production.up.railway.app/v1/usage', {
-        headers: { 'x-natively-key': key },
-        signal: AbortSignal.timeout(8000),
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/key', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as any;
-        return { ok: false, error: body.error || 'request_failed', status: res.status };
+
+      const payload = await response.json().catch((): null => null);
+      if (!response.ok) {
+        const message =
+          payload?.error?.message ||
+          payload?.message ||
+          (response.status === 401 || response.status === 403
+            ? 'OpenRouter rejected this key.'
+            : `OpenRouter returned HTTP ${response.status}.`);
+        return { success: false, error: message };
       }
-      const data = await res.json() as any;
-      return { ok: true, ...data };
+
+      const data = payload?.data || payload || {};
+      const asNumberOrNull = (value: unknown): number | null => {
+        if (value === null || value === undefined || value === '') return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+
+      const usage = asNumberOrNull(data.usage);
+      const limit = asNumberOrNull(data.limit);
+      const limitRemaining = asNumberOrNull(
+        data.limit_remaining ?? data.limitRemaining ?? data.remaining_credits ?? data.remainingCredits
+      );
+      const hasCredits = limitRemaining === null ? true : limitRemaining > 0;
+
+      return {
+        success: true,
+        label: typeof data.label === 'string' ? data.label : undefined,
+        usage,
+        limit,
+        limitRemaining,
+        hasCredits,
+        isFreeTier: Boolean(data.is_free_tier ?? data.isFreeTier),
+      };
     } catch (error: any) {
-      return { ok: false, error: error.message || 'network_error' };
+      const isAbort = error?.name === 'AbortError';
+      return {
+        success: false,
+        error: isAbort ? 'OpenRouter validation timed out.' : (error?.message || 'Unable to validate OpenRouter key.'),
+      };
+    } finally {
+      clearTimeout(timeout);
     }
   });
 
@@ -868,7 +769,7 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       const curlCmd: string = (provider as any).curlCommand;
       // Require {{TEXT}} so the app always has a defined injection point for the user prompt.
-      // We do NOT require the string to start with 'curl' — curlCommand is a template field,
+      // We do NOT require the string to start with 'curl' â€” curlCommand is a template field,
       // not necessarily a raw CLI string, and over-constraining it would break valid providers.
       if (!curlCmd.includes('{{TEXT}}')) {
         return { success: false, error: 'curlCommand must contain {{TEXT}} placeholder for the prompt' };
@@ -901,7 +802,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
-      // BUG-05 fix: providers may be in either the curl or legacy custom store —
+      // BUG-05 fix: providers may be in either the curl or legacy custom store â€”
       // merge both when looking up by id so neither store is silently ignored.
       const provider = [
         ...(cm.getCurlProviders() || []),
@@ -995,10 +896,12 @@ export function initializeIpcHandlers(appState: AppState): void {
         hasGroqKey: hasKey(creds.groqApiKey),
         hasOpenaiKey: hasKey(creds.openaiApiKey),
         hasClaudeKey: hasKey(creds.claudeApiKey),
-        hasNativelyKey: hasKey(creds.nativelyApiKey),
+        hasOpenRouterKey: hasKey(creds.openRouterApiKey),
+        openRouterApiKey: creds.openRouterApiKey || '',
         googleServiceAccountPath: creds.googleServiceAccountPath || null,
         sttProvider: creds.sttProvider || 'google',
         groqSttModel: creds.groqSttModel || 'whisper-large-v3-turbo',
+        localSttModel: creds.localSttModel || 'large-v3-turbo',
         hasSttGroqKey: hasKey(creds.groqSttApiKey),
         hasSttOpenaiKey: hasKey(creds.openAiSttApiKey),
         hasDeepgramKey: hasKey(creds.deepgramApiKey),
@@ -1008,7 +911,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         hasIbmWatsonKey: hasKey(creds.ibmWatsonApiKey),
         ibmWatsonRegion: creds.ibmWatsonRegion || 'us-south',
         hasSonioxKey: hasKey(creds.sonioxApiKey),
-        // STT key values — returned so the settings UI can pre-populate input fields.
+        // STT key values â€” returned so the settings UI can pre-populate input fields.
         // AI model keys (Gemini/Groq/OpenAI/Claude) remain boolean-only; STT keys are
         // surfaced here because users need to see which key is active when switching providers.
         sttGroqKey: creds.groqSttApiKey || '',
@@ -1018,7 +921,6 @@ export function initializeIpcHandlers(appState: AppState): void {
         sttAzureKey: creds.azureApiKey || '',
         sttIbmKey: creds.ibmWatsonApiKey || '',
         sttSonioxKey: creds.sonioxApiKey || '',
-        hasTavilyKey: hasKey(creds.tavilyApiKey),
         // Dynamic Model Discovery - preferred models
         geminiPreferredModel: creds.geminiPreferredModel || undefined,
         groqPreferredModel: creds.groqPreferredModel || undefined,
@@ -1026,7 +928,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         claudePreferredModel: creds.claudePreferredModel || undefined,
       };
     } catch (error: any) {
-      return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, hasNativelyKey: false, googleServiceAccountPath: null, sttProvider: 'google', groqSttModel: 'whisper-large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'eastus', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, hasTavilyKey: false, sttGroqKey: '', sttOpenaiKey: '', sttDeepgramKey: '', sttElevenLabsKey: '', sttAzureKey: '', sttIbmKey: '', sttSonioxKey: '' };
+        return { hasGeminiKey: false, hasGroqKey: false, hasOpenaiKey: false, hasClaudeKey: false, hasOpenRouterKey: false, openRouterApiKey: '', googleServiceAccountPath: null, sttProvider: 'google', groqSttModel: 'whisper-large-v3-turbo', localSttModel: 'large-v3-turbo', hasSttGroqKey: false, hasSttOpenaiKey: false, hasDeepgramKey: false, hasElevenLabsKey: false, hasAzureKey: false, azureRegion: 'eastus', hasIbmWatsonKey: false, ibmWatsonRegion: 'us-south', hasSonioxKey: false, sttGroqKey: '', sttOpenaiKey: '', sttDeepgramKey: '', sttElevenLabsKey: '', sttAzureKey: '', sttIbmKey: '', sttSonioxKey: '' };
     }
   });
 
@@ -1074,7 +976,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // STT Provider Management Handlers
   // ==========================================
 
-  safeHandle("set-stt-provider", async (_, provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively') => {
+  safeHandle("set-stt-provider", async (_, provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper') => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setSttProvider(provider);
@@ -1146,6 +1048,21 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("set-local-stt-model", async (_, model: string) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      CredentialsManager.getInstance().setLocalSttModel(model);
+
+      // Reconfigure the audio pipeline to use the new local model on the next upload.
+      await appState.reconfigureSttProvider();
+
+      return { success: true };
+    } catch (error: any) {
+      console.error("Error setting local STT model:", error);
+      return { success: false, error: error.message };
+    }
+  });
+
   safeHandle("set-elevenlabs-api-key", async (_, apiKey: string) => {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -1205,30 +1122,140 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("test-deepgram-transcription", async (_, apiKey: string, audioBase64: string, mimeType: string) => {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const key = String(apiKey || CredentialsManager.getInstance().getDeepgramApiKey() || '').trim();
+      if (!key) return { success: false, error: 'Add your Deepgram API key first.' };
+      if (!audioBase64) return { success: false, error: 'No microphone audio was captured. Try again and speak for a few seconds.' };
+
+      const WebSocket = require('ws');
+      const audioBuffer = Buffer.from(audioBase64, 'base64');
+      const model = process.env.DEEPGRAM_STT_MODEL?.trim() || 'flux-general-en';
+      const isContainerized = /webm|ogg|wav/i.test(String(mimeType || ''));
+      const url = isContainerized
+        ? `wss://api.deepgram.com/v2/listen?model=${encodeURIComponent(model)}`
+        : `wss://api.deepgram.com/v2/listen?model=${encodeURIComponent(model)}&encoding=linear16&sample_rate=16000`;
+
+      return await new Promise<{ success: boolean; transcript?: string; error?: string }>((resolve) => {
+        let settled = false;
+        let transcript = '';
+        let ws: any;
+
+        const finish = (result: { success: boolean; transcript?: string; error?: string }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          try { ws.close(); } catch { }
+          resolve(result);
+        };
+
+        ws = new WebSocket(url, {
+          headers: { Authorization: `Token ${key}` },
+        });
+
+        const timeout = setTimeout(() => {
+          finish({ success: false, error: 'Deepgram did not return a transcript. Check your mic and try again.' });
+        }, 15000);
+
+        ws.on('open', () => {
+          try {
+            ws.send(audioBuffer);
+            setTimeout(() => {
+              try { ws.send(JSON.stringify({ type: 'CloseStream' })); } catch { }
+            }, 250);
+          } catch (err: any) {
+            finish({ success: false, error: err?.message || 'Failed to send microphone audio to Deepgram.' });
+          }
+        });
+
+        ws.on('message', (data: any) => {
+          try {
+            const msg = JSON.parse(data.toString());
+            const text = typeof msg.transcript === 'string'
+              ? msg.transcript
+              : msg.channel?.alternatives?.[0]?.transcript;
+            if (text?.trim()) {
+              transcript = text.trim();
+            }
+            if ((msg.type === 'TurnInfo' && msg.event === 'EndOfTurn' && transcript) || msg.type === 'Metadata') {
+              finish({ success: true, transcript });
+            }
+          } catch {
+            // Ignore non-JSON frames.
+          }
+        });
+
+        ws.on('unexpected-response', (_request: any, response: any) => {
+          if (settled) return;
+          clearTimeout(timeout);
+
+          let body = '';
+          response.on('data', (chunk: Buffer) => {
+            body += chunk.toString('utf8');
+          });
+          response.on('end', () => {
+            const detail = body.trim();
+            finish({
+              success: false,
+              error: detail
+                ? `Deepgram rejected the mic test (${response.statusCode}): ${detail}`
+                : `Deepgram rejected the mic test (${response.statusCode}). Check key permissions or Flux access.`,
+            });
+          });
+          response.on('error', () => {
+            finish({ success: false, error: `Deepgram rejected the mic test (${response.statusCode}). Check key permissions or Flux access.` });
+          });
+        });
+
+        ws.on('error', (err: any) => {
+          finish({ success: false, error: err?.message || 'Deepgram connection failed.' });
+        });
+
+        ws.on('close', () => {
+          if (settled) return;
+          if (transcript) {
+            finish({ success: true, transcript });
+          } else {
+            finish({ success: false, error: 'No transcript detected. Check your microphone and speak during the 3-second test.' });
+          }
+        });
+      });
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Deepgram transcription test failed.' };
+    }
+  });
+
   // Helper to sanitize error messages (remove API key references)
   const sanitizeErrorMessage = (msg: string): string => {
     // Remove patterns like ": sk-***...***" or ": sdasdada***...dwwC"
     return msg.replace(/:\s*[a-zA-Z0-9*]+\*+[a-zA-Z0-9*]+\.?$/g, '').trim();
   };
 
-  safeHandle("test-stt-connection", async (_, provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => {
+  safeHandle("test-stt-connection", async (_, provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper', apiKey: string, region?: string) => {
     console.log(`[IPC] Received test - stt - connection request for provider: ${provider} `);
     try {
       if (provider === 'deepgram') {
         // Test Deepgram via WebSocket connection
         const WebSocket = require('ws');
         return await new Promise<{ success: boolean; error?: string }>((resolve) => {
-          const url = 'wss://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate=16000&channels=1';
+          const model = process.env.DEEPGRAM_STT_MODEL?.trim() || 'flux-general-en';
+          const url = `wss://api.deepgram.com/v2/listen?model=${encodeURIComponent(model)}&encoding=linear16&sample_rate=16000`;
           const ws = new WebSocket(url, {
-            headers: { Authorization: `Token ${apiKey} ` },
+            headers: { Authorization: `Token ${apiKey}` },
           });
+          let settled = false;
 
           const timeout = setTimeout(() => {
+            if (settled) return;
+            settled = true;
             ws.close();
             resolve({ success: false, error: 'Connection timed out' });
           }, 15000);
 
           ws.on('open', () => {
+            if (settled) return;
+            settled = true;
             clearTimeout(timeout);
             try { ws.send(JSON.stringify({ type: 'CloseStream' })); } catch { }
             ws.close();
@@ -1236,8 +1263,44 @@ export function initializeIpcHandlers(appState: AppState): void {
           });
 
           ws.on('error', (err: any) => {
+            if (settled) return;
+            settled = true;
             clearTimeout(timeout);
             resolve({ success: false, error: err.message || 'Connection failed' });
+          });
+
+          ws.on('unexpected-response', (_request: any, response: any) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+
+            let body = '';
+            response.on('data', (chunk: Buffer) => {
+              body += chunk.toString('utf8');
+            });
+            response.on('end', () => {
+              const detail = body.trim();
+              resolve({
+                success: false,
+                error: detail
+                  ? `Deepgram rejected the connection (${response.statusCode}): ${detail}`
+                  : `Deepgram rejected the connection (${response.statusCode})`,
+              });
+            });
+            response.on('error', () => {
+              resolve({ success: false, error: `Deepgram rejected the connection (${response.statusCode})` });
+            });
+          });
+
+          ws.on('close', (code: number, reason: Buffer) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            const detail = reason?.toString()?.trim();
+            resolve({
+              success: false,
+              error: detail ? `Deepgram closed connection (${code}): ${detail}` : `Deepgram closed connection (${code})`,
+            });
           });
         });
       }
@@ -1308,6 +1371,30 @@ export function initializeIpcHandlers(appState: AppState): void {
       wavHeader.writeUInt32LE(pcmData.length, 40);
       const testWav = Buffer.concat([wavHeader, pcmData]);
 
+      if (provider === 'local-whisper') {
+        const ensure = await WhisperCppManager.getInstance().ensureRunning('stt-test-connection');
+        if (!ensure.success) {
+          return { success: false, error: ensure.error || 'Failed to start local whisper.cpp server' };
+        }
+
+        const endpoint =
+          process.env.WHISPERCPP_ENDPOINT?.trim()
+          || 'http://127.0.0.1:8000/v1/audio/transcriptions';
+        const form = new FormData();
+        form.append('file', testWav, { filename: 'test.wav', contentType: 'audio/wav' });
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        form.append('model', CredentialsManager.getInstance().getLocalSttModel());
+
+        await axios.post(endpoint, form, {
+          headers: {
+            ...form.getHeaders(),
+          },
+          timeout: 120000,
+        });
+
+        return { success: true };
+      }
+
       if (provider === 'elevenlabs') {
         // ElevenLabs: Use /v1/voices to validate the API key (minimal scope required).
         // Scoped keys may lack speech_to_text or user_read but still be usable once permissions are added.
@@ -1318,12 +1405,12 @@ export function initializeIpcHandlers(appState: AppState): void {
           });
         } catch (elErr: any) {
           const elStatus = elErr?.response?.data?.detail?.status;
-          // If the error is "invalid_api_key", the key itself is wrong — fail.
+          // If the error is "invalid_api_key", the key itself is wrong â€” fail.
           // Any other error (missing permission, etc.) means the key IS valid, just possibly scoped.
           if (elStatus === 'invalid_api_key') {
             throw elErr;
           }
-          // Key is valid but scoped — pass with a warning
+          // Key is valid but scoped â€” pass with a warning
           console.log('[IPC] ElevenLabs key is valid but may have restricted scopes. Saving key.');
         }
       } else if (provider === 'azure') {
@@ -1710,7 +1797,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const intelligenceManager = appState.getIntelligenceManager();
       const clarification = await intelligenceManager.runClarify();
       // If null returned without throwing, the engine already set mode to idle.
-      // We must still ensure the frontend un-sticks — emit an error so onIntelligenceError fires.
+      // We must still ensure the frontend un-sticks â€” emit an error so onIntelligenceError fires.
       if (clarification === null) {
         const win = appState.getMainWindow();
         win?.webContents.send('intelligence-error', { error: 'Could not generate a clarifying question. Try again after some audio context is available.', mode: 'clarify' });
@@ -2201,278 +2288,196 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   // ==========================================
-  // Profile Engine IPC Handlers
+  // Realtime Modes IPC Handlers
   // ==========================================
 
-  safeHandle("profile:upload-resume", async (_, filePath: string) => {
+  const defaultRealtimeModesConfig = () => {
+    const now = new Date().toISOString();
+    return {
+      modes: [
+        {
+          id: 'general',
+          name: 'General',
+          prompt: `You are my real-time interview copilot. Give concise, natural first-person responses that sound like a real person speaking live. Keep answers confident, specific, and practical.`,
+          referenceFiles: [] as any[],
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      activeModeId: 'general' as string | null,
+    };
+  };
+
+  const normalizeRealtimeModesConfig = (rawConfig: any) => {
+    const fallback = defaultRealtimeModesConfig();
+    const sourceModes = Array.isArray(rawConfig?.modes) ? rawConfig.modes : fallback.modes;
+    const now = new Date().toISOString();
+
+    const seen = new Set<string>();
+    const modes = sourceModes
+      .map((raw: any, index: number) => {
+        const idBase = String(raw?.id || '').trim() || `mode-${index + 1}`;
+        const id = seen.has(idBase) ? `${idBase}-${index + 1}` : idBase;
+        seen.add(id);
+
+        const prompt = String(raw?.prompt || '').trim();
+        if (!prompt) return null;
+
+        const referenceFiles = Array.isArray(raw?.referenceFiles)
+          ? raw.referenceFiles
+              .map((file: any) => ({
+                id: String(file?.id || '').trim() || `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                name: String(file?.name || '').trim() || 'Reference file',
+                size: Number.isFinite(Number(file?.size)) ? Number(file.size) : 0,
+                storedPath: typeof file?.storedPath === 'string' ? file.storedPath : undefined,
+                text: typeof file?.text === 'string' ? file.text.slice(0, 12000) : '',
+                uploadedAt: String(file?.uploadedAt || '').trim() || now,
+              }))
+              .filter((file: any) => file.name)
+          : [];
+
+        return {
+          id,
+          name: String(raw?.name || '').trim() || `Mode ${index + 1}`,
+          prompt,
+          referenceFiles,
+          createdAt: String(raw?.createdAt || '').trim() || now,
+          updatedAt: now,
+        };
+      })
+      .filter(Boolean) as Array<{ id: string; name: string; prompt: string; createdAt: string; updatedAt: string }>;
+
+    const finalModes = modes.length > 0 ? modes : fallback.modes;
+    const requestedActiveId = typeof rawConfig?.activeModeId === 'string' ? rawConfig.activeModeId : null;
+    const activeModeId = requestedActiveId && finalModes.some((m) => m.id === requestedActiveId)
+      ? requestedActiveId
+      : finalModes[0].id;
+
+    return { modes: finalModes, activeModeId };
+  };
+
+  const applyRealtimeModesToRuntime = (config: { modes: any[]; activeModeId: string | null }) => {
     try {
-      // Premium gate: require active license for profile features
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
+      const llmHelper = appState.processingHelper?.getLLMHelper?.();
+      if (llmHelper && typeof llmHelper.setRealtimeModes === 'function') {
+        llmHelper.setRealtimeModes(config.modes, config.activeModeId);
       }
-      console.log(`[IPC] profile:upload-resume called with: ${filePath}`);
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
-      }
-      const { DocType } = require('../premium/electron/knowledge/types');
-      const result = await orchestrator.ingestDocument(filePath, DocType.RESUME);
-      return result;
-    } catch (error: any) {
-      console.error('[IPC] profile:upload-resume error:', error);
-      return { success: false, error: error.message };
+    } catch (error) {
+      console.error('[IPC] Failed applying realtime modes to runtime:', error);
     }
-  });
+  };
 
-  safeHandle("profile:get-status", async () => {
+  safeHandle("modes:get-config", async () => {
     try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { hasProfile: false, profileMode: false };
-      }
-      // Map new KnowledgeStatus back to legacy UI shape temporarily
-      const status = orchestrator.getStatus();
-      return {
-        hasProfile: status.hasResume,
-        profileMode: status.activeMode,
-        name: status.resumeSummary?.name,
-        role: status.resumeSummary?.role,
-        totalExperienceYears: status.resumeSummary?.totalExperienceYears
-      };
-    } catch (error: any) {
-      return { hasProfile: false, profileMode: false };
-    }
-  });
-
-  safeHandle("profile:set-mode", async (_, enabled: boolean) => {
-    try {
-      // Premium gate: only allow enabling profile mode with active license
-      if (enabled) {
-        const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-        if (!LicenseManager.getInstance().isPremium()) {
-          return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-        }
-      }
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
-      }
-      orchestrator.setKnowledgeMode(enabled);
-
       const { SettingsManager } = require('./services/SettingsManager');
-      SettingsManager.getInstance().set('knowledgeMode', enabled);
-
-      return { success: true };
+      const sm = SettingsManager.getInstance();
+      const normalized = normalizeRealtimeModesConfig(sm.get('modesConfig'));
+      sm.set('modesConfig', normalized);
+      applyRealtimeModesToRuntime(normalized);
+      return normalized;
     } catch (error: any) {
+      console.error('[IPC] modes:get-config error:', error);
+      const fallback = defaultRealtimeModesConfig();
+      applyRealtimeModesToRuntime(fallback);
+      return fallback;
+    }
+  });
+
+  safeHandle("modes:save-config", async (_, rawConfig: any) => {
+    try {
+      const { SettingsManager } = require('./services/SettingsManager');
+      const sm = SettingsManager.getInstance();
+      const normalized = normalizeRealtimeModesConfig(rawConfig);
+      sm.set('modesConfig', normalized);
+      applyRealtimeModesToRuntime(normalized);
+      return { success: true, config: normalized };
+    } catch (error: any) {
+      console.error('[IPC] modes:save-config error:', error);
       return { success: false, error: error.message };
     }
   });
 
-  safeHandle("profile:delete", async () => {
+  const extractModeReferenceText = async (filePath: string, ext: string): Promise<string> => {
     try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
+      const lowerExt = ext.toLowerCase();
+      if (['.txt', '.md', '.markdown', '.csv', '.json', '.log', '.yaml', '.yml'].includes(lowerExt)) {
+        return (await fs.promises.readFile(filePath, 'utf8')).slice(0, 12000);
       }
-      const { DocType } = require('../premium/electron/knowledge/types');
-      orchestrator.deleteDocumentsByType(DocType.RESUME);
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
 
-  safeHandle("profile:get-profile", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) return null;
-      return orchestrator.getProfileData();
-    } catch (error: any) {
-      return null;
-    }
-  });
+      if (lowerExt === '.pdf') {
+        const pdfParse = require('pdf-parse');
+        const buffer = await fs.promises.readFile(filePath);
+        const result = await pdfParse(buffer);
+        return String(result?.text || '').slice(0, 12000);
+      }
 
-  safeHandle("profile:select-file", async () => {
+      if (lowerExt === '.docx') {
+        const mammoth = require('mammoth');
+        const result = await mammoth.extractRawText({ path: filePath });
+        return String(result?.value || '').slice(0, 12000);
+      }
+    } catch (error: any) {
+      console.warn(`[IPC] modes:upload-reference-files text extraction failed for ${filePath}:`, error?.message || error);
+    }
+
+    return '';
+  };
+
+  safeHandle("modes:upload-reference-files", async () => {
     try {
-      const result: any = await dialog.showOpenDialog({
-        properties: ['openFile'],
+      const owner = appState.settingsWindowHelper?.getSettingsWindow?.() || appState.getMainWindow?.();
+      const dialogOptions: OpenDialogOptions = {
+        title: 'Upload mode reference files',
+        properties: ['openFile', 'multiSelections'],
         filters: [
-          { name: 'Resume Files', extensions: ['pdf', 'docx', 'txt'] }
-        ]
-      });
+          { name: 'Documents', extensions: ['pdf', 'docx', 'txt', 'md', 'markdown', 'csv', 'json', 'log', 'yaml', 'yml'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      };
+      const result: any = owner
+        ? await dialog.showOpenDialog(owner, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions);
 
       if (result.canceled || result.filePaths.length === 0) {
-        return { cancelled: true };
+        return { success: true, cancelled: true, files: [] };
       }
 
-      return { success: true, filePath: result.filePaths[0] };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
+      const storageDir = path.join(app.getPath('userData'), 'mode-reference-files');
+      await fs.promises.mkdir(storageDir, { recursive: true });
 
-  // ==========================================
-  // JD & Research IPC Handlers
-  // ==========================================
-
-  safeHandle("profile:upload-jd", async (_, filePath: string) => {
-    try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
-      console.log(`[IPC] profile:upload-jd called with: ${filePath}`);
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
-      }
-      const { DocType } = require('../premium/electron/knowledge/types');
-      const result = await orchestrator.ingestDocument(filePath, DocType.JD);
-      return result;
-    } catch (error: any) {
-      console.error('[IPC] profile:upload-jd error:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:delete-jd", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
-      }
-      const { DocType } = require('../premium/electron/knowledge/types');
-      orchestrator.deleteDocumentsByType(DocType.JD);
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:research-company", async (_, companyName: string) => {
-    try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
-      }
-      const engine = orchestrator.getCompanyResearchEngine();
-
-      // Wire search provider: Tavily (user key) → Natively API (fallback) → none (LLM-only)
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      const cm = CredentialsManager.getInstance();
-      const tavilyApiKey = cm.getTavilyApiKey();
-      if (tavilyApiKey) {
-        const { TavilySearchProvider } = require('../premium/electron/knowledge/TavilySearchProvider');
-        engine.setSearchProvider(new TavilySearchProvider(tavilyApiKey));
-      } else {
-        const nativelyKey = cm.getNativelyApiKey();
-        if (nativelyKey) {
-          const { NativelySearchProvider } = require('../premium/electron/knowledge/NativelySearchProvider');
-          engine.setSearchProvider(new NativelySearchProvider(nativelyKey));
-          console.log('[IPC] Company research: using Natively API search (no Tavily key configured)');
+      const uploadedFiles = [];
+      for (const filePath of result.filePaths) {
+        const stat = await fs.promises.stat(filePath);
+        if (!stat.isFile()) continue;
+        if (stat.size > 25 * 1024 * 1024) {
+          console.warn(`[IPC] modes:upload-reference-files skipped oversized file: ${filePath}`);
+          continue;
         }
+
+        const originalName = path.basename(filePath);
+        const ext = path.extname(originalName);
+        const baseName = path.basename(originalName, ext).replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'reference-file';
+        const id = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const storedName = `${id}-${baseName}${ext}`;
+        const storedPath = path.join(storageDir, storedName);
+
+        await fs.promises.copyFile(filePath, storedPath);
+        const text = await extractModeReferenceText(storedPath, ext);
+
+        uploadedFiles.push({
+          id,
+          name: originalName,
+          size: stat.size,
+          storedPath,
+          text,
+          uploadedAt: new Date().toISOString(),
+        });
       }
 
-      // Build full JD context so the dossier is tailored to the exact role
-      const profileData = orchestrator.getProfileData();
-      const activeJD = profileData?.activeJD;
-      const jdCtx = activeJD ? {
-        title: activeJD.title,
-        location: activeJD.location,
-        level: activeJD.level,
-        technologies: activeJD.technologies,
-        requirements: activeJD.requirements,
-        keywords: activeJD.keywords,
-        compensation_hint: activeJD.compensation_hint,
-        min_years_experience: activeJD.min_years_experience,
-      } : {};
-      const dossier = await engine.researchCompany(companyName, jdCtx, true);
-      const searchQuotaExhausted = (engine.searchProvider as any)?.quotaExhausted === true;
-      return { success: true, dossier, searchQuotaExhausted };
+      return { success: true, cancelled: false, files: uploadedFiles };
     } catch (error: any) {
-      console.error('[IPC] profile:research-company error:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:generate-negotiation", async (_, force: boolean = false) => {
-    try {
-      // Premium gate
-      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
-      if (!LicenseManager.getInstance().isPremium()) {
-        return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
-      }
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) {
-        return { success: false, error: 'Knowledge engine not initialized' };
-      }
-      const status = orchestrator.getStatus();
-      if (!status.hasResume) {
-        return { success: false, error: 'No resume loaded' };
-      }
-
-      // Use cache unless force-regenerating
-      let script = force ? null : orchestrator.getNegotiationScript();
-      if (!script) {
-        script = await orchestrator.generateNegotiationScriptOnDemand();
-      }
-      if (!script) {
-        return { success: false, error: 'Could not generate negotiation script. Ensure a resume and job description are uploaded.' };
-      }
-      return { success: true, script };
-    } catch (error: any) {
-      console.error('[IPC] profile:generate-negotiation error:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:get-negotiation-state", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) return { success: false, error: 'Engine not ready' };
-      const tracker = orchestrator.getNegotiationTracker();
-      return {
-        success: true,
-        state: tracker.getState(),
-        isActive: tracker.isActive(),
-      };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  safeHandle("profile:reset-negotiation", async () => {
-    try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (!orchestrator) return { success: false };
-      orchestrator.resetNegotiationSession();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  // ==========================================
-  // Tavily Search API Credentials
-  // ==========================================
-
-  safeHandle("set-tavily-api-key", async (_, apiKey: string) => {
-    try {
-      if (apiKey && !apiKey.startsWith('tvly-')) {
-        return { success: false, error: 'Invalid Tavily API key. Keys must start with "tvly-".' };
-      }
-      const { CredentialsManager } = require('./services/CredentialsManager');
-      CredentialsManager.getInstance().setTavilyApiKey(apiKey);
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error.message };
+      console.error('[IPC] modes:upload-reference-files error:', error);
+      return { success: false, error: error.message || 'Failed to upload reference files.' };
     }
   });
 
@@ -2481,8 +2486,18 @@ export function initializeIpcHandlers(appState: AppState): void {
   // ==========================================
 
   safeHandle("set-overlay-opacity", async (_, opacity: number) => {
+    const numericOpacity = Number(opacity);
+    if (!Number.isFinite(numericOpacity)) return;
     // Clamp to valid range
-    const clamped = Math.min(1.0, Math.max(0.35, opacity));
+    const clamped = Math.min(1.0, Math.max(0.35, numericOpacity));
+    const windowHelper = appState.getWindowHelper();
+    // No-op if value is unchanged (prevents renderer echo loops)
+    if (Math.abs(windowHelper.getOverlayOpacity() - clamped) < 0.0001) return;
+
+    windowHelper.setOverlayOpacity(clamped);
+    const { SettingsManager } = require('./services/SettingsManager');
+    SettingsManager.getInstance().set('overlayOpacity', clamped);
+
     // Broadcast to all renderer windows so the overlay picks it up in real-time
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) {
@@ -2492,4 +2507,3 @@ export function initializeIpcHandlers(appState: AppState): void {
     return;
   });
 }
-

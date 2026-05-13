@@ -1,4 +1,4 @@
-import { ChevronUp, ChevronDown, PointerOff } from "lucide-react";
+import { ChevronUp, ChevronDown } from "lucide-react";
 import icon from "../icon.png";
 import type { OverlayAppearance } from "../../lib/overlayAppearance";
 
@@ -18,7 +18,7 @@ export default function TopPill({
     onLogoClick,
 }: TopPillProps) {
     return (
-        <div className="flex justify-center mt-2 select-none z-50">
+        <div className="flex justify-center select-none z-50">
             <div
                 className="
           draggable-area

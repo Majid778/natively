@@ -3,7 +3,7 @@
  * Configuration for STT providers (Google gRPC, REST, WebSocket)
  */
 
-export type SttProviderId = 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'natively';
+export type SttProviderId = 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'local-whisper';
 
 export interface SttProviderConfig {
     id: SttProviderId;
@@ -34,8 +34,8 @@ export const STT_PROVIDERS: Record<SttProviderId, SttProviderConfig> = {
     },
     groq: {
         id: 'groq',
-        name: 'Groq Whisper (Fast)',
-        description: 'Ultra-fast transcription via Groq API',
+        name: 'Grok Whisper (Fast)',
+        description: 'Ultra-fast transcription via Grok API',
         endpoint: 'https://api.groq.com/openai/v1/audio/transcriptions',
         model: 'whisper-large-v3-turbo',
         uploadType: 'multipart',
@@ -65,12 +65,27 @@ export const STT_PROVIDERS: Record<SttProviderId, SttProviderConfig> = {
         }),
         responseContentPath: 'text',
     },
+    'local-whisper': {
+        id: 'local-whisper',
+        name: 'Local Whisper',
+        description: 'Local whisper.cpp transcription with no Python install',
+        endpoint: 'http://127.0.0.1:8000/v1/audio/transcriptions',
+        model: 'large-v3-turbo',
+        uploadType: 'multipart',
+        availableModels: [
+            { id: 'large-v3-turbo', label: 'Whisper Large V3 Turbo (Recommended)' },
+            { id: 'small', label: 'Whisper Small (Light)' },
+            { id: 'base', label: 'Whisper Base (Fast)' },
+        ],
+        authHeader: () => ({}),
+        responseContentPath: 'text',
+    },
     deepgram: {
         id: 'deepgram',
-        name: 'Deepgram Nova-3',
-        description: 'Real-time streaming transcription via Deepgram WebSocket',
-        endpoint: 'wss://api.deepgram.com/v1/listen',
-        model: 'nova-3',
+        name: 'Deepgram Flux',
+        description: 'Low-latency streaming transcription with built-in turn detection',
+        endpoint: 'wss://api.deepgram.com/v2/listen',
+        model: 'flux-general-en',
         uploadType: 'websocket',
         authHeader: (apiKey: string) => ({
             Authorization: `Token ${apiKey}`,
@@ -113,19 +128,8 @@ export const STT_PROVIDERS: Record<SttProviderId, SttProviderConfig> = {
         }),
         responseContentPath: 'results[0].alternatives[0].transcript',
     },
-    natively: {
-        id: 'natively',
-        name: 'Natively Pro (Managed)',
-        description: 'All-in-one managed STT via Natively API',
-        endpoint: '', 
-        model: '',
-        uploadType: 'websocket',
-        authHeader: () => ({}),
-        responseContentPath: '',
-    },
 };
 
 export const STT_PROVIDER_OPTIONS = Object.values(STT_PROVIDERS);
 
-export const DEFAULT_STT_PROVIDER: SttProviderId = 'google';
-
+export const DEFAULT_STT_PROVIDER: SttProviderId = 'deepgram';

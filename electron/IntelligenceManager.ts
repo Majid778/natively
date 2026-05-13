@@ -120,6 +120,14 @@ export class IntelligenceManager extends EventEmitter {
         this.session.logUsage(type, question, answer);
     }
 
+    /**
+     * Promote the latest interim interviewer segment to a final turn.
+     * Used when users trigger a manual action before VAD sentence-end fires.
+     */
+    flushInterimTranscript(): void {
+        this.session.flushInterimTranscript();
+    }
+
     // ============================================
     // Transcript Handling (delegates to engine)
     // ============================================

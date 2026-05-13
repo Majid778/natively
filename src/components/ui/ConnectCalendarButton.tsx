@@ -13,7 +13,7 @@ const ConnectCalendarButton: React.FC<ConnectCalendarButtonProps> = ({ className
 
     useEffect(() => {
         if (window.electronAPI) {
-            window.electronAPI.getCalendarStatus().then(status => {
+            window.electronAPI.getCalendarStatus().then((status: { connected: boolean }) => {
                 setConnected(status.connected);
                 if (status.connected) {
                     props.onConnect?.();
@@ -61,7 +61,7 @@ const ConnectCalendarButton: React.FC<ConnectCalendarButtonProps> = ({ className
                     ${className}
                 `}
                 style={{
-                    // Ultra Premium "Gemstone Glass"
+                    // Polished "Gemstone Glass"
                     background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.05) 50%, rgba(255, 255, 255, 0.02) 100%)',
                     backdropFilter: 'blur(16px)',
                     WebkitBackdropFilter: 'blur(16px)',
@@ -116,7 +116,7 @@ const ConnectCalendarButton: React.FC<ConnectCalendarButtonProps> = ({ className
                 </div>
 
                 <span className="relative z-10 flex items-center gap-3 pl-0.5">
-                    {/* Icon: Simple Polished Circle */}
+                    {/* Icon: Simple polished Circle */}
                     <div className="
                         relative flex items-center justify-center w-[20px] h-[20px] rounded-full 
                         bg-violet-600 shadow-sm ring-1 ring-white/20
@@ -151,7 +151,7 @@ const ConnectCalendarButton: React.FC<ConnectCalendarButtonProps> = ({ className
                 ${className}
             `}
             style={{
-                // Base Fill: Dark Purple
+                // Base Fill: Dark purple
                 backgroundColor: 'rgba(60, 20, 80, 0.4)',
                 // Blur: Backdrop filter 12-16px
                 backdropFilter: 'blur(14px)',

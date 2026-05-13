@@ -1,5 +1,5 @@
 /**
- * DeepgramStreamingSTT - WebSocket-based streaming Speech-to-Text using Deepgram Nova-3
+ * DeepgramStreamingSTT - WebSocket-based streaming Speech-to-Text using Deepgram Flux
  *
  * Implements the same EventEmitter interface as GoogleSTT:
  *   Events: 'transcript' ({ text, isFinal, confidence }), 'error' (Error)
@@ -17,6 +17,7 @@ const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const RECONNECT_MAX_ATTEMPTS = 10;
 const KEEPALIVE_INTERVAL_MS = 5000;
+const DEEPGRAM_FLUX_MODEL = process.env.DEEPGRAM_STT_MODEL?.trim() || 'flux-general-en';
 
 export class DeepgramStreamingSTT extends EventEmitter {
     private apiKey: string;
@@ -156,15 +157,10 @@ export class DeepgramStreamingSTT extends EventEmitter {
         this.isConnecting = true;
 
         const url =
-            `wss://api.deepgram.com/v1/listen` +
-            `?model=nova-3` +
+            `wss://api.deepgram.com/v2/listen` +
+            `?model=${encodeURIComponent(DEEPGRAM_FLUX_MODEL)}` +
             `&encoding=linear16` +
-            `&sample_rate=${this.sampleRate}` +
-            `&channels=${this.numChannels}` +
-            `&language=${this.languageCode}` +
-            `&smart_format=true` +
-            `&interim_results=true` +
-            `&keepalive=true`;
+            `&sample_rate=${this.sampleRate}`;
 
         console.log(`[DeepgramStreaming] Connecting (rate=${this.sampleRate}, ch=${this.numChannels})...`);
 
@@ -196,8 +192,21 @@ export class DeepgramStreamingSTT extends EventEmitter {
             try {
                 const msg = JSON.parse(data.toString());
 
-                // Deepgram response structure:
-                // { type: "Results", channel: { alternatives: [{ transcript, confidence }] }, is_final }
+                // Flux v2 response structure:
+                // { type: "TurnInfo", event: "Update|EndOfTurn|...", transcript, words, end_of_turn_confidence }
+                if (msg.type === 'TurnInfo') {
+                    const transcript = msg.transcript;
+                    if (!transcript) return;
+
+                    this.emit('transcript', {
+                        text: transcript,
+                        isFinal: msg.event === 'EndOfTurn',
+                        confidence: msg.end_of_turn_confidence ?? 1.0,
+                    });
+                    return;
+                }
+
+                // Legacy v1/Nova response support, kept as a harmless fallback.
                 if (msg.type !== 'Results') return;
 
                 const transcript = msg.channel?.alternatives?.[0]?.transcript;

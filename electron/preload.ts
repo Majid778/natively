@@ -47,9 +47,7 @@ interface ElectronAPI {
   quitApp: () => Promise<void>
 
   // LLM Model Management
-  getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "gemini"; model: string; isOllama: boolean }>
-  getAvailableOllamaModels: () => Promise<string[]>
-  switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
+  getCurrentLlmConfig: () => Promise<{ provider: "gemini"; model: string }>
   switchToGemini: (apiKey?: string, modelId?: string) => Promise<{ success: boolean; error?: string }>
   testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string) => Promise<{ success: boolean; error?: string }>
   selectServiceAccount: () => Promise<{ success: boolean; path?: string; cancelled?: boolean; error?: string }>
@@ -59,12 +57,11 @@ interface ElectronAPI {
   setGroqApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  setNativelyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  getNativelyUsage: () => Promise<{ ok: boolean; plan?: string; quota?: { transcription: { used: number; limit: number; remaining: number }; ai: { used: number; limit: number; remaining: number }; search: { used: number; limit: number; remaining: number }; resets_at: string }; member_since?: string; error?: string; status?: number }>
-  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; hasNativelyKey: boolean; googleServiceAccountPath: string | null; sttProvider: string; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; hasSonioxKey: boolean }>
+  setOpenRouterApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; hasOpenRouterKey: boolean; openRouterApiKey: string; googleServiceAccountPath: string | null; sttProvider: string; groqSttModel?: string; localSttModel?: string; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; hasSonioxKey: boolean; sttDeepgramKey?: string }>
 
   // STT Provider Management
-  setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively') => Promise<{ success: boolean; error?: string }>
+  setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper') => Promise<{ success: boolean; error?: string }>
   getSttProvider: () => Promise<string>
   setGroqSttApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setOpenAiSttApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
@@ -74,8 +71,10 @@ interface ElectronAPI {
   setAzureRegion: (region: string) => Promise<{ success: boolean; error?: string }>
   setIbmWatsonApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setGroqSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
+  setLocalSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
   setSonioxApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
+  testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
+  testDeepgramTranscription: (apiKey: string, audioBase64: string, mimeType: string) => Promise<{ success: boolean; transcript?: string; error?: string }>
 
   // Native Audio Service Events
   onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
@@ -107,6 +106,7 @@ interface ElectronAPI {
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
   endMeeting: () => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
+  forceEndSentence: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
@@ -130,7 +130,6 @@ interface ElectronAPI {
   setModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   setDefaultModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
   toggleModelSelector: (coords: { x: number; y: number }) => Promise<void>
-  forceRestartOllama: () => Promise<void>
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>
@@ -146,6 +145,7 @@ interface ElectronAPI {
   saveCustomProvider: (provider: any) => Promise<{ success: boolean; id?: string; error?: string }>
   getCustomProviders: () => Promise<any[]>
   deleteCustomProvider: (id: string) => Promise<{ success: boolean; error?: string }>
+  validateOpenRouterKey: (apiKey: string) => Promise<{ success: boolean; error?: string; label?: string; usage?: number | null; limit?: number | null; limitRemaining?: number | null; hasCredits?: boolean; isFreeTier?: boolean }>
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>
@@ -166,6 +166,7 @@ interface ElectronAPI {
   hideOverlay: () => Promise<void>
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
+  onMeetingAudioError: (callback: (message: string) => void) => () => void
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   onToggleExpand: (callback: () => void) => () => void
@@ -176,7 +177,7 @@ interface ElectronAPI {
   onOverlayMousePassthroughChanged: (callback: (enabled: boolean) => void) => () => void
 
   // Streaming listeners
-  streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean, ignoreKnowledgeMode?: boolean }) => Promise<void>
+  streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => Promise<void>
   onGeminiStreamToken: (callback: (token: string) => void) => () => void
   onGeminiStreamDone: (callback: () => void) => () => void
   onGeminiStreamError: (callback: (error: string) => void) => () => void
@@ -185,10 +186,6 @@ interface ElectronAPI {
   onUndetectableChanged: (callback: (state: boolean) => void) => () => void
   onGroqFastTextChanged: (callback: (enabled: boolean) => void) => () => void
   onModelChanged: (callback: (modelId: string) => void) => () => void
-
-  // Ollama
-  onOllamaPullProgress: (callback: (data: { status: string; percent: number }) => void) => () => void
-  onOllamaPullComplete: (callback: () => void) => () => void
 
   // Theme API
   getThemeMode: () => Promise<{ mode: 'system' | 'light' | 'dark', resolved: 'light' | 'dark' }>
@@ -235,29 +232,16 @@ interface ElectronAPI {
   // Global shortcut events (stealth: fired even when window is not focused)
   onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
-  // Donation API
-  getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
-  markDonationToastShown: () => Promise<{ success: boolean }>;
-  setDonationComplete: () => Promise<{ success: boolean }>;
-
-  // Profile Engine API
-  profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>;
-  profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>;
-  profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
-  profileDelete: () => Promise<{ success: boolean; error?: string }>;
-  profileGetProfile: () => Promise<any>;
-  profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>;
-
-  // JD & Research API
-  profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>;
-  profileDeleteJD: () => Promise<{ success: boolean; error?: string }>;
-  profileResearchCompany: (companyName: string) => Promise<{ success: boolean; dossier?: any; error?: string }>;
-  profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>;
-  profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>;
-  profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>;
-
-  // Tavily Search API
-  setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
+  // Realtime Modes API
+  modesGetConfig: () => Promise<{
+    modes: Array<{ id: string; name: string; prompt: string; referenceFiles?: Array<{ id: string; name: string; size: number; storedPath?: string; text?: string; uploadedAt: string }>; createdAt: string; updatedAt: string }>;
+    activeModeId: string | null;
+  }>
+  modesSaveConfig: (config: {
+    modes: Array<{ id: string; name: string; prompt: string; referenceFiles?: Array<{ id: string; name: string; size: number; storedPath?: string; text?: string; uploadedAt: string }>; createdAt: string; updatedAt: string }>;
+    activeModeId: string | null;
+  }) => Promise<{ success: boolean; config?: any; error?: string }>
+  modesUploadReferenceFiles: () => Promise<{ success: boolean; cancelled?: boolean; files?: Array<{ id: string; name: string; size: number; storedPath?: string; text?: string; uploadedAt: string }>; error?: string }>
 
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => Promise<void>;
@@ -448,6 +432,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('meeting-state-changed', subscription);
     return () => { ipcRenderer.removeListener('meeting-state-changed', subscription); };
   },
+  onMeetingAudioError: (callback: (message: string) => void) => {
+    const subscription = (_: any, message: string) => callback(message);
+    ipcRenderer.on('meeting-audio-error', subscription);
+    return () => { ipcRenderer.removeListener('meeting-audio-error', subscription); };
+  },
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => {
     const subscription = (_: any, isMaximized: boolean) => callback(isMaximized);
     ipcRenderer.on('window-maximized-changed', subscription);
@@ -495,8 +484,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // LLM Model Management
   getCurrentLlmConfig: () => ipcRenderer.invoke("get-current-llm-config"),
-  getAvailableOllamaModels: () => ipcRenderer.invoke("get-available-ollama-models"),
-  switchToOllama: (model?: string, url?: string) => ipcRenderer.invoke("switch-to-ollama", model, url),
   switchToGemini: (apiKey?: string, modelId?: string) => ipcRenderer.invoke("switch-to-gemini", apiKey, modelId),
   testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => ipcRenderer.invoke("test-llm-connection", provider, apiKey),
   selectServiceAccount: () => ipcRenderer.invoke("select-service-account"),
@@ -506,12 +493,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setGroqApiKey: (apiKey: string) => ipcRenderer.invoke("set-groq-api-key", apiKey),
   setOpenaiApiKey: (apiKey: string) => ipcRenderer.invoke("set-openai-api-key", apiKey),
   setClaudeApiKey: (apiKey: string) => ipcRenderer.invoke("set-claude-api-key", apiKey),
-  setNativelyApiKey: (apiKey: string) => ipcRenderer.invoke("set-natively-api-key", apiKey),
-  getNativelyUsage: () => ipcRenderer.invoke("get-natively-usage"),
+  setOpenRouterApiKey: (apiKey: string) => ipcRenderer.invoke("set-openrouter-api-key", apiKey),
   getStoredCredentials: () => ipcRenderer.invoke("get-stored-credentials"),
 
   // STT Provider Management
-  setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively') => ipcRenderer.invoke("set-stt-provider", provider),
+  setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper') => ipcRenderer.invoke("set-stt-provider", provider),
   getSttProvider: () => ipcRenderer.invoke("get-stt-provider"),
   setGroqSttApiKey: (apiKey: string) => ipcRenderer.invoke("set-groq-stt-api-key", apiKey),
   setOpenAiSttApiKey: (apiKey: string) => ipcRenderer.invoke("set-openai-stt-api-key", apiKey),
@@ -521,8 +507,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setAzureRegion: (region: string) => ipcRenderer.invoke("set-azure-region", region),
   setIbmWatsonApiKey: (apiKey: string) => ipcRenderer.invoke("set-ibmwatson-api-key", apiKey),
   setGroqSttModel: (model: string) => ipcRenderer.invoke("set-groq-stt-model", model),
+  setLocalSttModel: (model: string) => ipcRenderer.invoke("set-local-stt-model", model),
   setSonioxApiKey: (apiKey: string) => ipcRenderer.invoke("set-soniox-api-key", apiKey),
-  testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => ipcRenderer.invoke("test-stt-connection", provider, apiKey, region),
+  testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper', apiKey: string, region?: string) => ipcRenderer.invoke("test-stt-connection", provider, apiKey, region),
+  testDeepgramTranscription: (apiKey: string, audioBase64: string, mimeType: string) => ipcRenderer.invoke("test-deepgram-transcription", apiKey, audioBase64, mimeType),
 
   // Native Audio Service Events
   onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => {
@@ -612,6 +600,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   startMeeting: (metadata?: any) => ipcRenderer.invoke("start-meeting", metadata),
   endMeeting: () => ipcRenderer.invoke("end-meeting"),
   finalizeMicSTT: () => ipcRenderer.invoke("finalize-mic-stt"),
+  forceEndSentence: () => ipcRenderer.invoke("force-end-sentence"),
   getRecentMeetings: () => ipcRenderer.invoke("get-recent-meetings"),
   getMeetingDetails: (id: string) => ipcRenderer.invoke("get-meeting-details", id),
   updateMeetingTitle: (id: string, title: string) => ipcRenderer.invoke("update-meeting-title", { id, title }),
@@ -745,7 +734,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
 
   // Streaming Chat
-  streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean, ignoreKnowledgeMode?: boolean }) => ipcRenderer.invoke("gemini-chat-stream", message, imagePaths, context, options),
+  streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => ipcRenderer.invoke("gemini-chat-stream", message, imagePaths, context, options),
 
   onGeminiStreamToken: (callback: (token: string) => void) => {
     const subscription = (_: any, token: string) => callback(token)
@@ -776,7 +765,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setModel: (modelId: string) => ipcRenderer.invoke('set-model', modelId),
   setDefaultModel: (modelId: string) => ipcRenderer.invoke('set-default-model', modelId),
   toggleModelSelector: (coords: { x: number; y: number }) => ipcRenderer.invoke('toggle-model-selector', coords),
-  forceRestartOllama: () => ipcRenderer.invoke('force-restart-ollama'),
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => ipcRenderer.invoke('toggle-settings-window', coords),
@@ -792,6 +780,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   saveCustomProvider: (provider: any) => ipcRenderer.invoke('save-custom-provider', provider),
   getCustomProviders: () => ipcRenderer.invoke('get-custom-providers'),
   deleteCustomProvider: (id: string) => ipcRenderer.invoke('delete-custom-provider', id),
+  validateOpenRouterKey: (apiKey: string) => ipcRenderer.invoke('validate-openrouter-key', apiKey),
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => ipcRenderer.invoke('generate-followup-email', input),
@@ -844,22 +833,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('model-changed', subscription)
     return () => {
       ipcRenderer.removeListener('model-changed', subscription)
-    }
-  },
-
-  onOllamaPullProgress: (callback: (data: { status: string; percent: number }) => void) => {
-    const subscription = (_: any, data: any) => callback(data)
-    ipcRenderer.on('ollama:pull-progress', subscription)
-    return () => {
-      ipcRenderer.removeListener('ollama:pull-progress', subscription)
-    }
-  },
-
-  onOllamaPullComplete: (callback: () => void) => {
-    const subscription = () => callback()
-    ipcRenderer.on('ollama:pull-complete', subscription)
-    return () => {
-      ipcRenderer.removeListener('ollama:pull-complete', subscription)
     }
   },
 
@@ -997,40 +970,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
     }
   },
 
-  // Donation API
-  getDonationStatus: () => ipcRenderer.invoke("get-donation-status"),
-  markDonationToastShown: () => ipcRenderer.invoke("mark-donation-toast-shown"),
-  setDonationComplete: () => ipcRenderer.invoke('set-donation-complete'),
-
-  // Profile Engine API
-  profileUploadResume: (filePath: string) => ipcRenderer.invoke('profile:upload-resume', filePath),
-  profileGetStatus: () => ipcRenderer.invoke('profile:get-status'),
-  profileSetMode: (enabled: boolean) => ipcRenderer.invoke('profile:set-mode', enabled),
-  profileDelete: () => ipcRenderer.invoke('profile:delete'),
-  profileGetProfile: () => ipcRenderer.invoke('profile:get-profile'),
-  profileSelectFile: () => ipcRenderer.invoke('profile:select-file'),
-
-  // JD & Research API
-  profileUploadJD: (filePath: string) => ipcRenderer.invoke('profile:upload-jd', filePath),
-  profileDeleteJD: () => ipcRenderer.invoke('profile:delete-jd'),
-  profileResearchCompany: (companyName: string) => ipcRenderer.invoke('profile:research-company', companyName),
-  profileGenerateNegotiation: (force?: boolean) => ipcRenderer.invoke('profile:generate-negotiation', force),
-  profileGetNegotiationState: () => ipcRenderer.invoke('profile:get-negotiation-state'),
-  profileResetNegotiation: () => ipcRenderer.invoke('profile:reset-negotiation'),
-
-  // Tavily Search API
-  setTavilyApiKey: (apiKey: string) => ipcRenderer.invoke('set-tavily-api-key', apiKey),
+  // Realtime Modes API
+  modesGetConfig: () => ipcRenderer.invoke('modes:get-config'),
+  modesSaveConfig: (config: {
+    modes: Array<{ id: string; name: string; prompt: string; referenceFiles?: Array<{ id: string; name: string; size: number; storedPath?: string; text?: string; uploadedAt: string }>; createdAt: string; updatedAt: string }>;
+    activeModeId: string | null;
+  }) => ipcRenderer.invoke('modes:save-config', config),
+  modesUploadReferenceFiles: () => ipcRenderer.invoke('modes:upload-reference-files'),
 
   // Dynamic Model Discovery
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => ipcRenderer.invoke('fetch-provider-models', provider, apiKey),
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => ipcRenderer.invoke('set-provider-preferred-model', provider, modelId),
-
-  // License Management
-  licenseActivate: (key: string) => ipcRenderer.invoke('license:activate', key),
-  licenseCheckPremium: () => ipcRenderer.invoke('license:check-premium'),
-  licenseCheckPremiumAsync: () => ipcRenderer.invoke('license:check-premium-async'),
-  licenseDeactivate: () => ipcRenderer.invoke('license:deactivate'),
-  licenseGetHardwareId: () => ipcRenderer.invoke('license:get-hardware-id'),
 
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => ipcRenderer.invoke('set-overlay-opacity', opacity),

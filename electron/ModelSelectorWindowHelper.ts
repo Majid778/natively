@@ -7,6 +7,10 @@ const startUrl = isDev
     ? "http://localhost:5180"
     : `file://${path.join(app.getAppPath(), "dist/index.html")}`
 
+const fallbackFileUrl = `file://${path.join(app.getAppPath(), "dist/index.html")}`;
+const MODEL_SELECTOR_WIDTH = 300;
+const MODEL_SELECTOR_HEIGHT = 220;
+
 import type { WindowHelper } from "./WindowHelper"
 
 type WindowActivationOptions = {
@@ -59,6 +63,10 @@ export class ModelSelectorWindowHelper {
         if (mainWin && !mainWin.isDestroyed()) {
             this.window.setParentWindow(mainWin);
         }
+
+        // Keep preloaded or already-open selector windows in sync with the UI width.
+        // Without this, an old 140px window clips the widened React dropdown.
+        this.window.setSize(MODEL_SELECTOR_WIDTH, MODEL_SELECTOR_HEIGHT);
 
         if (process.platform === "darwin") {
             // Align with parent window behavior
@@ -129,8 +137,8 @@ export class ModelSelectorWindowHelper {
 
     private createWindow(x?: number, y?: number, showWhenReady: boolean = true): void {
         const windowSettings: Electron.BrowserWindowConstructorOptions = {
-            width: 140,
-            height: 200,
+            width: MODEL_SELECTOR_WIDTH,
+            height: MODEL_SELECTOR_HEIGHT,
             frame: false,
             transparent: true,
             resizable: false,
@@ -165,12 +173,29 @@ export class ModelSelectorWindowHelper {
         this.window.setContentProtection(this.contentProtection)
 
         // Load with query param for routing
+        const cacheBust = Date.now();
         const url = isDev
-            ? `${startUrl}?window=model-selector`
-            : `${startUrl}?window=model-selector`
+            ? `${startUrl}?window=model-selector&v=${cacheBust}`
+            : `${startUrl}?window=model-selector&v=${cacheBust}`
 
-        this.window.loadURL(url).catch(e => {
+        this.window.loadURL(url).catch(async (e) => {
             console.error('[ModelSelectorWindowHelper] Failed to load URL:', e);
+            if (isDev && this.window && !this.window.isDestroyed()) {
+                try {
+                    await this.window.loadURL(`${fallbackFileUrl}?window=model-selector&v=${cacheBust}`);
+                    console.log('[ModelSelectorWindowHelper] Fallback to file URL succeeded');
+                } catch (fallbackError) {
+                    console.error('[ModelSelectorWindowHelper] Fallback to file URL failed:', fallbackError);
+                }
+            }
+        });
+        this.window.webContents.on('render-process-gone', (_event, details) => {
+            console.error(`[ModelSelectorWindowHelper] Selector renderer gone: reason=${details.reason} exitCode=${details.exitCode}`);
+        });
+        this.window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+            if (level >= 2) {
+                console.error(`[Renderer/model-selector] ${sourceId}:${line} ${message}`);
+            }
         });
 
         this.window.once('ready-to-show', () => {

@@ -49,6 +49,7 @@ export interface ElectronAPI {
   hideOverlay: () => Promise<void>
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
+  onMeetingAudioError: (callback: (message: string) => void) => () => void
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   openExternal: (url: string) => Promise<void>
@@ -70,9 +71,7 @@ export interface ElectronAPI {
   closeAdvancedSettings: () => Promise<void>
 
   // LLM Model Management
-  getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "gemini"; model: string; isOllama: boolean }>
-  getAvailableOllamaModels: () => Promise<string[]>
-  switchToOllama: (model?: string, url?: string) => Promise<{ success: boolean; error?: string }>
+  getCurrentLlmConfig: () => Promise<{ provider: "gemini" | "custom"; model: string }>
   switchToGemini: (apiKey?: string, modelId?: string) => Promise<{ success: boolean; error?: string }>
   testLlmConnection: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey?: string) => Promise<{ success: boolean; error?: string }>
   selectServiceAccount: () => Promise<{ success: boolean; path?: string; cancelled?: boolean; error?: string }>
@@ -82,12 +81,11 @@ export interface ElectronAPI {
   setGroqApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setOpenaiApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setClaudeApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  setNativelyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  getNativelyUsage: () => Promise<{ ok: boolean; error?: string; plan?: string; quota?: { transcription: { used: number; limit: number; remaining: number }; ai: { used: number; limit: number; remaining: number }; search: { used: number; limit: number; remaining: number }; resets_at: string }; member_since?: string }>
-  getStoredCredentials: () => Promise<{ hasNativelyKey?: boolean; hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; googleServiceAccountPath: string | null; sttProvider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively'; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; groqSttModel?: string; hasSonioxKey?: boolean; hasTavilyKey?: boolean; geminiPreferredModel?: string; groqPreferredModel?: string; openaiPreferredModel?: string; claudePreferredModel?: string; sttGroqKey?: string; sttOpenaiKey?: string; sttDeepgramKey?: string; sttElevenLabsKey?: string; sttAzureKey?: string; sttIbmKey?: string; sttSonioxKey?: string }>
+  setOpenRouterApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  getStoredCredentials: () => Promise<{ hasGeminiKey: boolean; hasGroqKey: boolean; hasOpenaiKey: boolean; hasClaudeKey: boolean; hasOpenRouterKey?: boolean; openRouterApiKey?: string; googleServiceAccountPath: string | null; sttProvider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper'; hasSttGroqKey: boolean; hasSttOpenaiKey: boolean; hasDeepgramKey: boolean; hasElevenLabsKey: boolean; hasAzureKey: boolean; azureRegion: string; hasIbmWatsonKey: boolean; ibmWatsonRegion: string; groqSttModel?: string; localSttModel?: string; hasSonioxKey?: boolean; geminiPreferredModel?: string; groqPreferredModel?: string; openaiPreferredModel?: string; claudePreferredModel?: string; sttGroqKey?: string; sttOpenaiKey?: string; sttDeepgramKey?: string; sttElevenLabsKey?: string; sttAzureKey?: string; sttIbmKey?: string; sttSonioxKey?: string }>
 
   // STT Provider Management
-  setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'natively') => Promise<{ success: boolean; error?: string }>
+  setSttProvider: (provider: 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper') => Promise<{ success: boolean; error?: string }>
   getSttProvider: () => Promise<string>
   setGroqSttApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setOpenAiSttApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
@@ -97,8 +95,10 @@ export interface ElectronAPI {
   setAzureRegion: (region: string) => Promise<{ success: boolean; error?: string }>
   setIbmWatsonApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setGroqSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
+  setLocalSttModel: (model: string) => Promise<{ success: boolean; error?: string }>
   setSonioxApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
-  testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
+  testSttConnection: (provider: 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'local-whisper', apiKey: string, region?: string) => Promise<{ success: boolean; error?: string }>
+  testDeepgramTranscription: (apiKey: string, audioBase64: string, mimeType: string) => Promise<{ success: boolean; transcript?: string; error?: string }>
 
   // Native Audio Service Events
   onNativeAudioTranscript: (callback: (transcript: { speaker: string; text: string; final: boolean }) => void) => () => void
@@ -141,6 +141,7 @@ export interface ElectronAPI {
   startMeeting: (metadata?: any) => Promise<{ success: boolean; error?: string }>
   endMeeting: () => Promise<{ success: boolean; error?: string }>
   finalizeMicSTT: () => Promise<void>
+  forceEndSentence: () => Promise<void>
   getRecentMeetings: () => Promise<Array<{ id: string; title: string; date: string; duration: string; summary: string }>>
   getMeetingDetails: (id: string) => Promise<any>
   updateMeetingTitle: (id: string, title: string) => Promise<boolean>
@@ -168,7 +169,7 @@ export interface ElectronAPI {
   onSessionReset: (callback: () => void) => () => void;
 
   // Streaming listeners
-  streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean, ignoreKnowledgeMode?: boolean }) => Promise<void>
+  streamGeminiChat: (message: string, imagePaths?: string[], context?: string, options?: { skipSystemPrompt?: boolean }) => Promise<void>
   onGeminiStreamToken: (callback: (token: string) => void) => () => void
   onGeminiStreamDone: (callback: () => void) => () => void
   onGeminiStreamError: (callback: (error: string) => void) => () => void;
@@ -178,7 +179,6 @@ export interface ElectronAPI {
   setModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
   setDefaultModel: (modelId: string) => Promise<{ success: boolean; error?: string }>;
   toggleModelSelector: (coords: { x: number; y: number }) => Promise<void>;
-  forceRestartOllama: () => Promise<void>;
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>;
@@ -194,6 +194,7 @@ export interface ElectronAPI {
   saveCustomProvider: (provider: any) => Promise<{ success: boolean; id?: string; error?: string }>;
   getCustomProviders: () => Promise<any[]>;
   deleteCustomProvider: (id: string) => Promise<{ success: boolean; error?: string }>;
+  validateOpenRouterKey: (apiKey: string) => Promise<{ success: boolean; error?: string; label?: string; usage?: number | null; limit?: number | null; limitRemaining?: number | null; hasCredits?: boolean; isFreeTier?: boolean }>;
 
   // Follow-up Email
   generateFollowupEmail: (input: any) => Promise<string>;
@@ -212,9 +213,6 @@ export interface ElectronAPI {
   onUndetectableChanged: (callback: (state: boolean) => void) => () => void;
   onGroqFastTextChanged: (callback: (enabled: boolean) => void) => () => void;
   onModelChanged: (callback: (modelId: string) => void) => () => void;
-
-  onOllamaPullProgress: (callback: (data: { status: string; percent: number }) => void) => () => void;
-  onOllamaPullComplete: (callback: () => void) => () => void;
 
   onMeetingsUpdated: (callback: () => void) => () => void
 
@@ -258,11 +256,6 @@ export interface ElectronAPI {
   onRAGStreamComplete: (callback: (data: { meetingId?: string; global?: boolean }) => void) => () => void
   onRAGStreamError: (callback: (data: { meetingId?: string; global?: boolean; error: string }) => void) => () => void
 
-  // Donation API
-  getDonationStatus: () => Promise<{ shouldShow: boolean; hasDonated: boolean; lifetimeShows: number }>;
-  markDonationToastShown: () => Promise<{ success: boolean }>;
-  setDonationComplete: () => Promise<{ success: boolean }>;
-
   // Keybind Management
   getKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   setKeybind: (id: string, accelerator: string) => Promise<boolean>
@@ -271,36 +264,20 @@ export interface ElectronAPI {
   onKeybindRegistrationFailed: (callback: (data: { id: string; accelerator: string }) => void) => () => void
   onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
-  // Profile Engine API
-  profileUploadResume: (filePath: string) => Promise<{ success: boolean; error?: string }>
-  profileGetStatus: () => Promise<{ hasProfile: boolean; profileMode: boolean; name?: string; role?: string; totalExperienceYears?: number }>
-  profileSetMode: (enabled: boolean) => Promise<{ success: boolean; error?: string }>
-  profileDelete: () => Promise<{ success: boolean; error?: string }>
-  profileGetProfile: () => Promise<any>
-  profileSelectFile: () => Promise<{ success?: boolean; cancelled?: boolean; filePath?: string; error?: string }>
-
-  // JD & Research API
-  profileUploadJD: (filePath: string) => Promise<{ success: boolean; error?: string }>
-  profileDeleteJD: () => Promise<{ success: boolean; error?: string }>
-  profileResearchCompany: (companyName: string) => Promise<{ success: boolean; dossier?: any; error?: string; searchQuotaExhausted?: boolean }>
-  profileGenerateNegotiation: (force?: boolean) => Promise<{ success: boolean; script?: any; error?: string }>
-  profileGetNegotiationState: () => Promise<{ success: boolean; state?: any; isActive?: boolean; error?: string }>
-  profileResetNegotiation: () => Promise<{ success: boolean; error?: string }>
-
-  // Tavily Search API
-  setTavilyApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
+  // Realtime Modes API
+  modesGetConfig: () => Promise<{
+    modes: Array<{ id: string; name: string; prompt: string; referenceFiles?: Array<{ id: string; name: string; size: number; storedPath?: string; text?: string; uploadedAt: string }>; createdAt: string; updatedAt: string }>;
+    activeModeId: string | null;
+  }>
+  modesSaveConfig: (config: {
+    modes: Array<{ id: string; name: string; prompt: string; referenceFiles?: Array<{ id: string; name: string; size: number; storedPath?: string; text?: string; uploadedAt: string }>; createdAt: string; updatedAt: string }>;
+    activeModeId: string | null;
+  }) => Promise<{ success: boolean; config?: any; error?: string }>
+  modesUploadReferenceFiles: () => Promise<{ success: boolean; cancelled?: boolean; files?: Array<{ id: string; name: string; size: number; storedPath?: string; text?: string; uploadedAt: string }>; error?: string }>
 
   // Dynamic Model Discovery
   fetchProviderModels: (provider: 'gemini' | 'groq' | 'openai' | 'claude', apiKey: string) => Promise<{ success: boolean; models?: {id: string, label: string}[]; error?: string }>
   setProviderPreferredModel: (provider: 'gemini' | 'groq' | 'openai' | 'claude', modelId: string) => Promise<void>
-
-  // License Management
-  licenseActivate: (key: string) => Promise<{ success: boolean; error?: string }>
-  licenseCheckPremium: () => Promise<boolean>
-  /** Async startup check — calls Dodo validate endpoint to detect server-side revocations. */
-  licenseCheckPremiumAsync: () => Promise<boolean>
-  licenseDeactivate: () => Promise<void>
-  licenseGetHardwareId: () => Promise<string>
 
   // Overlay Opacity (Stealth Mode)
   setOverlayOpacity: (opacity: number) => Promise<void>;

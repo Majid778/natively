@@ -7,6 +7,8 @@ const startUrl = isDev
     ? "http://localhost:5180"
     : `file://${path.join(app.getAppPath(), "dist/index.html")}`
 
+const fallbackFileUrl = `file://${path.join(app.getAppPath(), "dist/index.html")}`;
+
 /**
  * CropperWindowHelper configuration constants.
  * These values can be overridden via environment variables for testing/debugging.
@@ -502,6 +504,18 @@ export class CropperWindowHelper {
                 await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
+
+        if (isDev && this.cropperWindow && !this.cropperWindow.isDestroyed()) {
+            try {
+                await this.cropperWindow.loadURL(`${fallbackFileUrl}?window=cropper`);
+                console.log('[CropperWindowHelper] Fallback to file URL succeeded');
+                return;
+            } catch (fallbackError) {
+                console.error('[CropperWindowHelper] Fallback to file URL failed:', fallbackError);
+            }
+        }
+
+        throw new Error('Unable to load cropper window URL');
     }
 
     private hideOrClose(): void {

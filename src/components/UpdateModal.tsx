@@ -143,7 +143,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                         onClick={onDismiss}
                     />
 
-                    {/* Modal - Apple Style: Premium, Deep Shadow, Subtle Border */}
+                    {/* Modal - Apple style: deep shadow, subtle border */}
                     <motion.div
                         initial={{ opacity: 0, scale: 0.96, y: 8 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -223,7 +223,7 @@ const UpdateModal: React.FC<UpdateModalProps> = ({
                                     </p>
                                 </div>
 
-                                {/* 2. Premium Troubleshooting Card */}
+                                {/* 2. Troubleshooting Card */}
                                 <div
                                     tabIndex={-1}
                                     className="w-full max-w-[360px] bg-white/[0.03] rounded-xl border border-white/[0.06] p-3.5 flex flex-col gap-2.5 text-left mb-8 outline-none focus:outline-none focus:ring-0"

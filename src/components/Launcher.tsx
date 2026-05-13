@@ -1,15 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { ToggleLeft, ToggleRight, Search, Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download, DownloadCloud, CheckCircle, AlertCircle } from 'lucide-react';
+import { ToggleLeft, ToggleRight, Search, Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
 import icon from "./icon.png";
 import mainui from "../UI_comp/mainui.png";
-import calender from "../UI_comp/calender.png";
-import ConnectCalendarButton from './ui/ConnectCalendarButton';
 import MeetingDetails from './MeetingDetails';
 import TopSearchPill from './TopSearchPill';
 import GlobalChatOverlay from './GlobalChatOverlay';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FeatureSpotlight } from './FeatureSpotlight';
 import { analytics } from '../lib/analytics/analytics.service'; // Added analytics import
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
@@ -46,9 +43,6 @@ interface LauncherProps {
     onStartMeeting: () => void;
     onOpenSettings: (tab?: string) => void;
     onPageChange?: (isMain: boolean) => void;
-    ollamaPullStatus?: 'idle' | 'downloading' | 'complete' | 'failed';
-    ollamaPullPercent?: number;
-    ollamaPullMessage?: string;
 }
 
 // Helper to format date groups
@@ -76,7 +70,7 @@ const formatTime = (dateStr: string) => {
     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 };
 
-const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '' }) => {
+const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onPageChange }) => {
     const [meetings, setMeetings] = useState<Meeting[]>([]);
     const [isDetectable, setIsDetectable] = useState(false);
     const [isMeetingActive, setIsMeetingActive] = useState(false);
@@ -84,7 +78,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [upcomingEvents, setUpcomingEvents] = useState<any[]>([]);
     const [isPrepared, setIsPrepared] = useState(false);
     const [preparedEvent, setPreparedEvent] = useState<any>(null);
-    const [isCalendarConnected, setIsCalendarConnected] = useState(false);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [showNotification, setShowNotification] = useState(false);
 
@@ -527,42 +520,6 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             </div>
                                         </div>
 
-                                        {/* Center: Ollama Pull Status Pill (flex-1 to center evenly) */}
-                                        <div className="flex-1 flex justify-center mx-4">
-                                            <AnimatePresence>
-                                                {ollamaPullStatus !== 'idle' && (
-                                                    <motion.div
-                                                        initial={{ opacity: 0, scale: 0.9, y: 10 }}
-                                                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                                                        exit={{ opacity: 0, scale: 0.9, y: 10 }}
-                                                        transition={{ type: "spring", stiffness: 400, damping: 25 }}
-                                                        className={`flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-xl ${isLight ? 'bg-bg-elevated border border-border-muted shadow-[0_4px_16px_rgba(0,0,0,0.1)]' : 'bg-bg-elevated/80 border border-white/10 shadow-[0_4px_16px_rgba(0,0,0,0.3)]'}`}
-                                                    >
-                                                        {ollamaPullStatus === 'downloading' ? (
-                                                            <DownloadCloud size={14} className="text-blue-400 animate-pulse shrink-0" />
-                                                        ) : ollamaPullStatus === 'complete' ? (
-                                                            <CheckCircle size={14} className="text-emerald-400 shrink-0" />
-                                                        ) : (
-                                                            <AlertCircle size={14} className="text-red-400 shrink-0" />
-                                                        )}
-                                                        <div className="flex flex-col">
-                                                            <span className="text-[11px] font-medium text-text-secondary whitespace-nowrap">
-                                                                {ollamaPullStatus === 'downloading' ? `Setting up AI memory... ${ollamaPullPercent}%` : ollamaPullMessage}
-                                                            </span>
-                                                            {ollamaPullStatus === 'downloading' && (
-                                                                <div className="w-full h-[3px] bg-white/10 rounded-full mt-1 overflow-hidden">
-                                                                    <div
-                                                                        className="h-full bg-blue-500 rounded-full transition-all duration-300"
-                                                                        style={{ width: `${ollamaPullPercent}%` }}
-                                                                    />
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </motion.div>
-                                                )}
-                                            </AnimatePresence>
-                                        </div>
-
                                         {/* Unified CTA pill — same jelly shape, morphs between idle and active-meeting state */}
                                         <motion.button
                                             onClick={() => {
@@ -687,7 +644,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                         ) : (
                                             /* Dynamic Next Meeting OR Default Intro */
                                             nextMeeting ? (
-                                                <div className={`md:col-span-2 relative group rounded-xl overflow-hidden ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)]`}>
+                                                <div className={`md:col-span-3 relative group rounded-xl overflow-hidden ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)]`}>
                                                     {/* Header */}
                                                     <div className="p-5 flex-1 relative z-10">
                                                         <div className="flex items-center gap-2 mb-2">
@@ -734,43 +691,11 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     <div className="absolute top-0 right-0 w-[150px] h-[150px] bg-emerald-500/10 blur-[60px] pointer-events-none" />
                                                 </div>
                                             ) : (
-                                                <div className="md:col-span-2 h-full">
-                                                    <FeatureSpotlight />
+                                                <div className={`md:col-span-3 h-full rounded-xl border ${isLight ? 'border-border-muted bg-bg-elevated' : 'border-white/10 bg-bg-secondary'} flex items-center justify-center px-6`}>
+                                                    <p className="text-sm text-text-secondary">No upcoming meetings in the next hour.</p>
                                                 </div>
                                             )
                                         )}
-
-
-
-                                        {/* Right Secondary Card */}
-                                        <div className="md:col-span-1 rounded-xl overflow-hidden bg-bg-elevated relative group flex flex-col items-center pt-6 text-center">
-                                            {/* Backdrop Image */}
-                                            <div className="absolute inset-0">
-                                                <img src={calender} alt="" className="w-full h-full object-cover opacity-100 transition-opacity duration-500 translate-x--1 translate-y-[1px] scale-105" />
-                                            </div>
-
-                                            {/* Content Layer */}
-                                            <div className="relative z-10 w-full flex flex-col items-center h-full">
-                                                <h3 className="text-[19px] leading-tight mb-4">
-                                                    {isCalendarConnected ? (
-                                                        <>
-                                                            <span className="block font-semibold text-white">Calendar linked</span>
-                                                            <span className="block font-medium text-white/60 text-[0.95em]">Events synced</span>
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <span className="block font-semibold text-white">Link your calendar to</span>
-                                                            <span className="block font-medium text-white/60 text-[0.95em]">see upcoming events</span>
-                                                        </>
-                                                    )}
-                                                </h3>
-
-                                                <ConnectCalendarButton
-                                                    className="-translate-x-0.5"
-                                                    onConnect={() => setIsCalendarConnected(true)}
-                                                />
-                                            </div>
-                                        </div>
                                     </div>
                                 </div>
                             </section>

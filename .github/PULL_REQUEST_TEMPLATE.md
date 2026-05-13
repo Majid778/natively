@@ -1,17 +1,15 @@
-## Summary
-<!-- What does this PR do and why? Link to issues: Fixes #123 -->
+﻿## Summary
 
-Fixes #
+Describe what changed and why.
 
-## Type of Change
-- 🐛 Bug Fix
-- ✨ New Feature
-- 🎨 Refactor / Style Update
-- 📝 Documentation
+## Test Plan
 
-## Testing & Environment
-- [ ] Manual test performed on: **[e.g. Windows 11]**
-<!-- Describe how to verify the changes below -->
+- [ ] `npm run build`
+- [ ] `npm run build:electron`
+- [ ] `npm run build:native`
+- [ ] `npm run dist:win`
+- [ ] Manual Windows smoke test completed
 
-## Visuals (Optional)
-<!-- Drag and drop screenshots or videos here. -->
+## Notes
+
+Mention any known limitations, packaging warnings, or setup requirements.

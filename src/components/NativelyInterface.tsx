@@ -34,7 +34,6 @@ import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/
 // import { ModelSelector } from './ui/ModelSelector'; // REMOVED
 import TopPill from './ui/TopPill';
 import RollingTranscript from './ui/RollingTranscript';
-import { NegotiationCoachingCard } from '../premium';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -128,7 +127,23 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     });
 
     // Model Selection State
-    const [currentModel, setCurrentModel] = useState<string>('gemini-3-flash-preview');
+    const [currentModel, setCurrentModel] = useState<string>('openrouter-google-gemini-2-5-flash');
+
+    const prettifyModelName = (model: string) => model
+        .replace(/^openrouter-/, '')
+        .replace(/-/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+
+    const getModelDisplayName = (model: string) => {
+        if (model === 'openrouter-google-gemini-2-5-flash') return 'OpenRouter (Google Gemini 2.5 Flash)';
+        if (model.startsWith('openrouter-')) return `OpenRouter (${prettifyModelName(model)})`;
+        if (model === 'gemini-3.1-flash-lite-preview') return 'Gemini 3.1 Flash';
+        if (model === 'gemini-3.1-pro-preview') return 'Gemini 3.1 Pro';
+        if (model === 'llama-3.3-70b-versatile') return 'Grok Llama 3.3';
+        if (model === 'gpt-5.4') return 'GPT 5.4';
+        if (model === 'claude-sonnet-4-6') return 'Sonnet 4.6';
+        return prettifyModelName(model);
+    };
 
     // Dynamic Action Button Mode (Recap vs Brainstorm)
     const [actionButtonMode, setActionButtonMode] = useState<'recap' | 'brainstorm'>('recap');
@@ -1351,23 +1366,6 @@ Provide only the answer, nothing else.`;
 
 
     const renderMessageText = (msg: Message) => {
-        // Negotiation coaching card takes priority
-        if (msg.isNegotiationCoaching && msg.negotiationCoachingData) {
-            return (
-                <NegotiationCoachingCard
-                    {...msg.negotiationCoachingData}
-                    phase={msg.negotiationCoachingData.phase as any}
-                    onSilenceTimerEnd={() => {
-                        setMessages(prev => prev.map(m =>
-                            m.id === msg.id
-                                ? { ...m, negotiationCoachingData: m.negotiationCoachingData ? { ...m.negotiationCoachingData, showSilenceTimer: false } : undefined }
-                                : m
-                        ));
-                    }}
-                />
-            );
-        }
-
         // Code-containing messages get special styling
         // We split by code blocks to keep the "Code Solution" UI intact for the code parts
         // But use ReactMarkdown for the text parts around it
@@ -1902,15 +1900,17 @@ Provide only the answer, nothing else.`;
                         transition={{ duration: 0.3, ease: "easeInOut" }}
                         className="flex flex-col items-center gap-2 w-full"
                     >
-                        <TopPill
-                            expanded={isExpanded}
-                            onToggle={() => setIsExpanded(!isExpanded)}
-                            onQuit={() => onEndMeeting ? onEndMeeting() : window.electronAPI.quitApp()}
-                            appearance={appearance}
-                            onLogoClick={() => window.electronAPI?.setWindowMode?.('launcher')}
-                        />
+                        <div className="w-[600px] max-w-full draggable-area flex justify-center pt-2">
+                            <TopPill
+                                expanded={isExpanded}
+                                onToggle={() => setIsExpanded(!isExpanded)}
+                                onQuit={() => onEndMeeting ? onEndMeeting() : window.electronAPI.quitApp()}
+                                appearance={appearance}
+                                onLogoClick={() => window.electronAPI?.setWindowMode?.('launcher')}
+                            />
+                        </div>
                         <div
-                            className={`relative w-[600px] max-w-full backdrop-blur-2xl border rounded-[24px] overflow-hidden flex flex-col draggable-area overlay-shell-surface ${overlayPanelClass}`}
+                            className={`relative w-[600px] max-w-full backdrop-blur-2xl border rounded-[24px] overflow-hidden flex flex-col overlay-shell-surface ${overlayPanelClass}`}
                             style={appearance.shellStyle}
                         >
 
@@ -2138,7 +2138,7 @@ Provide only the answer, nothing else.`;
                                             className={`
                                                 flex items-center gap-2 px-3 py-1.5
                                                 border rounded-lg transition-colors
-                                                text-xs font-medium w-[140px]
+                                                text-xs font-medium w-[270px] max-w-[45vw]
                                                 interaction-base interaction-press
                                                 ${controlSurfaceClass}
                                             `}
@@ -2147,13 +2147,7 @@ Provide only the answer, nothing else.`;
                                             <span className="truncate min-w-0 flex-1">
                                                 {(() => {
                                                     const m = currentModel;
-                                                    if (m.startsWith('ollama-')) return m.replace('ollama-', '');
-                                                    if (m === 'gemini-3.1-flash-lite-preview') return 'Gemini 3.1 Flash';
-                                                    if (m === 'gemini-3.1-pro-preview') return 'Gemini 3.1 Pro';
-                                                    if (m === 'llama-3.3-70b-versatile') return 'Groq Llama 3.3';
-                                                    if (m === 'gpt-5.4') return 'GPT 5.4';
-                                                    if (m === 'claude-sonnet-4-6') return 'Sonnet 4.6';
-                                                    return m;
+                                                    return getModelDisplayName(m);
                                                 })()}
                                             </span>
                                             <ChevronDown size={14} className="shrink-0 transition-transform" />

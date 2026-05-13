@@ -16,7 +16,7 @@ import axios from 'axios';
 import FormData from 'form-data';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
 
-export type RestSttProvider = 'groq' | 'openai' | 'elevenlabs' | 'azure' | 'ibmwatson';
+export type RestSttProvider = 'groq' | 'openai' | 'local-whisper' | 'elevenlabs' | 'azure' | 'ibmwatson';
 
 interface RestSttProviderConfig {
     endpoint: string;
@@ -29,6 +29,10 @@ interface RestSttProviderConfig {
 }
 
 type ProviderConfigFactory = (apiKey: string, region?: string, languageKey?: string) => RestSttProviderConfig;
+
+const LOCAL_WHISPER_ENDPOINT =
+    process.env.WHISPERCPP_ENDPOINT?.trim()
+    || 'http://127.0.0.1:8000/v1/audio/transcriptions';
 
 const PROVIDER_CONFIGS: Record<RestSttProvider, ProviderConfigFactory> = {
     groq: (apiKey, region, languageKey) => {
@@ -62,6 +66,23 @@ const PROVIDER_CONFIGS: Record<RestSttProvider, ProviderConfigFactory> = {
             extractTranscript: (data: any) => {
                 if (typeof data === 'string') return data;
                 return data?.text ?? '';
+            },
+        };
+    },
+    'local-whisper': (_apiKey, _region, languageKey) => {
+        const lang = languageKey ? RECOGNITION_LANGUAGES[languageKey]?.iso639 : undefined;
+        return {
+            endpoint: LOCAL_WHISPER_ENDPOINT,
+            model: process.env.WHISPERCPP_MODEL?.trim()
+                || 'large-v3-turbo',
+            authHeader: {},
+            uploadType: 'multipart',
+            extraFormFields: {
+                ...(lang ? { language: lang } : {})
+            },
+            extractTranscript: (data: any) => {
+                if (typeof data === 'string') return data;
+                return data?.text ?? data?.transcription ?? '';
             },
         };
     },
@@ -246,7 +267,7 @@ export class RestSTT extends EventEmitter {
 
     /**
      * Called when the native SilenceSuppressor detects speech has ended.
-     * The internal Rust engine already applies a 150-200ms VAD hangover to avoid
+     * The internal Rust engine already applies a short VAD hangover (~220-250ms) to avoid
      * word-breaks, so we flush immediately without adding redundant TS debouncing.
      */
     public notifySpeechEnded(): void {

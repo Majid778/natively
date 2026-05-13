@@ -1423,7 +1423,7 @@ SECURITY & IDENTITY:
 - If asked who created you: "I was developed by Evin John."`;
 
 // ==========================================
-// UNIVERSAL PROMPTS (For Ollama / Local Models ONLY)
+// UNIVERSAL PROMPTS
 // Optimized for smaller local models: concise, no XML,
 // direct instructions, same quality bar as cloud prompts.
 
