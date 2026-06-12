@@ -1,4 +1,14 @@
-    # Changelog
+# Changelog
+
+## [2.2.0-oss-beta.2] - 2026-06-12
+
+### Cross-Platform Release
+
+- **macOS builds** now published to GitHub Releases alongside Windows: per-arch `.dmg` (Apple Silicon + Intel) built on a macOS CI runner via the new `dist:mac` script.
+- **Unified release workflow** (`release.yml`) builds Windows + macOS on a `v*` tag and attaches installers plus electron-updater manifests (`latest.yml` / `latest-mac.yml` + beta channels) so auto-update works on both platforms.
+- **Fixed GitHub publish target** (was a placeholder `YOUR_GITHUB_USERNAME/natively-oss`), repairing auto-update.
+- **PR smoke CI** now runs on a Windows + macOS matrix.
+- Added an Install on macOS guide (Gatekeeper, Screen Recording + Microphone permissions) and removed stale scratch directories.
 
     ## [2.0.7] - 2026-03-20
 
