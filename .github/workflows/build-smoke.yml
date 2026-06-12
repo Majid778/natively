@@ -6,7 +6,13 @@ on:
 
 jobs:
   smoke:
-    runs-on: windows-latest
+    name: Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
 
     steps:
       - name: Checkout
