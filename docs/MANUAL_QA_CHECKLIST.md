@@ -1,8 +1,8 @@
 ﻿# Manual QA Checklist
 
-Run this before sharing a Windows build with friends.
+Run this before sharing Windows or macOS builds with friends.
 
-## Build
+## Windows Build
 
 - [ ] Close any running Natively/Electron instances.
 - [ ] Run `npm run build`.
@@ -10,6 +10,20 @@ Run this before sharing a Windows build with friends.
 - [ ] Run `npm run build:native`.
 - [ ] Run `npm run dist:win`.
 - [ ] Confirm installer and portable `.exe` artifacts exist in `release/`.
+
+## macOS Build And Smoke
+
+- [ ] Close any running Natively/Electron instances.
+- [ ] Run `npm run dist:mac`.
+- [ ] Confirm `.dmg` artifacts exist in `release/`.
+- [ ] Open the DMG and drag `Natively OSS.app` to Applications.
+- [ ] Confirm Gatekeeper first-launch warning appears for the unsigned/ad-hoc app.
+- [ ] Right-click `Natively OSS.app`, choose `Open`, and confirm the app launches.
+- [ ] If quarantine blocks launch, run `xattr -dr com.apple.quarantine "/Applications/Natively OSS.app"` and launch again.
+- [ ] Confirm Screen Recording permission prompt appears when system audio capture starts.
+- [ ] Confirm Microphone permission prompt appears when microphone capture starts.
+- [ ] Play a YouTube video and confirm system audio transcription appears.
+- [ ] Speak into the microphone and confirm user transcription appears.
 
 ## First Launch
 
@@ -54,6 +68,6 @@ Run this before sharing a Windows build with friends.
 
 ## Packaging Sanity
 
-- [ ] Test on a clean Windows machine if possible.
-- [ ] Confirm SmartScreen warning is documented.
+- [ ] Test on clean Windows and macOS machines if possible.
+- [ ] Confirm SmartScreen and Gatekeeper warnings are documented.
 - [ ] Confirm no API keys are committed.

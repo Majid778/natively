@@ -3,10 +3,11 @@
 
 # Natively OSS
 
-A local-first AI meeting copilot for private use with friends, study groups, and small teams.
+A local-first Windows and macOS AI meeting copilot for private use with friends, study groups, and small teams.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4.svg)](#install-on-windows)
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon%20%2B%20Intel-111827.svg)](#install-on-macos)
 [![BYOK](https://img.shields.io/badge/AI-Bring%20Your%20Own%20Key-22c55e.svg)](#openrouter-setup)
 
 </div>
@@ -19,7 +20,7 @@ Current default stack:
 
 - AI model routing: OpenRouter, defaulting to Google Gemini 2.5 Flash.
 - Cloud transcription: Deepgram Flux.
-- Audio capture: native Windows audio module built from Rust.
+- Audio capture: native desktop audio module built from Rust.
 - Data storage: local SQLite database on your machine.
 - Modes: reusable prompt presets for different contexts.
 
@@ -35,12 +36,27 @@ The easiest path is to download the portable `.exe` from GitHub Releases.
 
 This build is unsigned, so SmartScreen warnings are expected for now.
 
+## Install On macOS
+
+Download the `.dmg` for your Mac from the latest GitHub Release:
+
+- Apple Silicon Macs: download the `arm64` `.dmg`.
+- Intel Macs: download the `x64` `.dmg`.
+
+Open the DMG, drag `Natively OSS.app` to Applications, then launch it. This build is unsigned/ad-hoc signed, so Gatekeeper will warn on first launch. Right-click `Natively OSS.app` and choose `Open`, then confirm. If quarantine still blocks launch, run:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Natively OSS.app"
+```
+
+After launch, grant Screen Recording and Microphone access in `System Settings > Privacy & Security`, then restart the app if macOS asks you to.
+
 ## Ask Claude To Install It
 
 If you are sharing this with a friend, you can tell them to paste this into Claude:
 
 ```text
-Install Natively OSS from this GitHub repository on my Windows computer. Use the latest GitHub Release if one exists. Download the Windows build, run it, then help me add my OpenRouter and Deepgram API keys in Settings > AI Providers. If there is no release artifact, clone the repo and follow the developer setup instructions in README.md.
+Install Natively OSS from this GitHub repository on my Windows or macOS computer. Use the latest GitHub Release if one exists. Download the right build for my operating system and CPU, run it, then help me add my OpenRouter and Deepgram API keys in Settings > AI Providers. If there is no release artifact, clone the repo and follow the developer setup instructions in README.md.
 ```
 
 ## OpenRouter Setup
@@ -64,16 +80,17 @@ Natively OSS uses Deepgram Flux for the friend-ready transcription path.
 If transcription fails, check:
 
 - The Deepgram key has access to Flux.
-- Windows microphone/system audio permissions are enabled.
+- Windows or macOS microphone/system audio permissions are enabled.
 
 ## Developer Setup
 
 Requirements:
 
-- Windows 10/11
+- Windows 10/11 or macOS
 - Node.js 22
 - Rust toolchain
-- Visual Studio C++ Build Tools
+- Windows: Visual Studio C++ Build Tools
+- macOS: Xcode Command Line Tools
 
 Install and run in development:
 
@@ -89,6 +106,12 @@ Build a portable Windows EXE:
 npm run dist:win
 ```
 
+Build macOS DMG and ZIP artifacts:
+
+```sh
+npm run dist:mac
+```
+
 The artifact is written to `release/`.
 
 If native build fails because the app is open, close all running Natively/Electron windows and run `npm run build:native` again.
@@ -100,8 +123,8 @@ Before sharing a release with friends:
 1. Run `npm run build`.
 2. Run `npm run build:electron`.
 3. Run `npm run build:native`.
-4. Run `npm run dist:win`.
-5. Test the generated portable EXE from `release/` outside the repo.
+4. Run `npm run dist:win` on Windows or `npm run dist:mac` on macOS.
+5. Test the generated installer from `release/` outside the repo.
 6. Verify OpenRouter key save/verify works.
 7. Start a meeting and confirm Deepgram transcription works with YouTube/system audio.
 8. Press an AI panel action and confirm it uses the selected OpenRouter model.
@@ -116,8 +139,9 @@ This fork should not include analytics or tracking. If you find any telemetry co
 ## Known Limitations
 
 - Windows builds are unsigned, so SmartScreen warnings are expected.
+- macOS builds are unsigned/ad-hoc signed, so Gatekeeper warnings are expected.
 - Friends need their own OpenRouter and Deepgram API keys.
-- The portable EXE is the recommended distribution path for now; a signed installer can come later.
+- GitHub Release artifacts are the recommended distribution path for now; signed installers can come later.
 - Some older source files may still mention calendar or stealth features internally, but they are not part of the simplified public setup path.
 
 ## License
