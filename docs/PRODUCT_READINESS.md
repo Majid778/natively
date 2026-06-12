@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Natively OSS is ready for local development and close-friends beta testing. It is not yet a polished public release until a clean packaged build passes the QA checklist.
+Natively OSS is ready for local development and close-friends beta testing on Windows and macOS. It is not yet a polished public release until clean packaged builds pass the QA checklist on both platforms.
 
 Working pieces:
 
@@ -10,21 +10,26 @@ Working pieces:
 - Deepgram Flux cloud transcription as the friend-ready default.
 - AI Providers setup for exactly two required keys: OpenRouter and Deepgram.
 - Manage Modes for reusable prompts.
-- Native Windows audio capture module.
+- Native desktop audio capture module.
 - Movable AI panel with opacity settings.
 - Stop flow returns to launcher and generates a summary.
 - Windows installer and portable build path via `npm run dist:win`.
+- macOS DMG and ZIP build path via `npm run dist:mac`.
 
 ## Remaining Release Risks
 
 1. Windows builds are unsigned and will trigger SmartScreen.
-2. Full clean-machine QA still needs to be repeated from the packaged EXE.
-3. Friends must bring their own OpenRouter and Deepgram keys.
-4. Some deeper legacy provider hooks remain in source for compatibility, but they are not shown in the simplified setup path.
+2. macOS builds are unsigned/ad-hoc signed and will trigger Gatekeeper on first launch.
+3. macOS auto-update is semi-automatic while unsigned; users may need to approve the updated app through Gatekeeper.
+4. Full clean-machine QA still needs to be repeated from packaged Windows and macOS artifacts.
+5. Friends must bring their own OpenRouter and Deepgram keys.
+6. Some deeper legacy provider hooks remain in source for compatibility, but they are not shown in the simplified setup path.
 
 ## Beta Definition Of Done
 
 - Windows installer and portable EXE build locally and in GitHub Actions.
+- macOS DMG and ZIP artifacts build locally and in GitHub Actions.
+- GitHub Releases include Windows and macOS electron-updater manifests.
 - README install path works when followed by a non-developer.
 - OpenRouter key save/test survives restart.
 - Deepgram key save/test records a 3-second mic sample and returns text.
