@@ -16,7 +16,6 @@ import { RECOGNITION_LANGUAGES } from '../config/languages';
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const RECONNECT_MAX_ATTEMPTS = 10;
-const KEEPALIVE_INTERVAL_MS = 5000;
 const DEEPGRAM_FLUX_MODEL = process.env.DEEPGRAM_STT_MODEL?.trim() || 'flux-general-en';
 
 export class DeepgramStreamingSTT extends EventEmitter {
@@ -208,8 +207,12 @@ export class DeepgramStreamingSTT extends EventEmitter {
                 }
             }
 
-            // Start keep-alive pings
-            this.startKeepAlive();
+            // NOTE: Do NOT send a keep-alive message. Deepgram Flux (v2/listen) only
+            // accepts `CloseStream` or `Configure` as text frames; it rejects
+            // `{type:"KeepAlive"}` with UNPARSABLE_CLIENT_MESSAGE and immediately
+            // closes the socket. That killed every transcription session ~5s in
+            // (verified against the live API). The continuous meeting audio keeps the
+            // stream alive; gaps are handled by reconnect-on-next-audio in write().
         });
 
         this.ws.on('message', (data: WebSocket.Data) => {
@@ -296,20 +299,9 @@ export class DeepgramStreamingSTT extends EventEmitter {
     // =========================================================================
     // Keep-alive
     // =========================================================================
-
-    private startKeepAlive(): void {
-        this.clearKeepAlive();
-        this.keepAliveTimer = setInterval(() => {
-            if (this.ws?.readyState === WebSocket.OPEN) {
-                try {
-                    // Send KeepAlive JSON instead of raw ping frame for Deepgram API idle prevention
-                    this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
-                } catch {
-                    // Ignore errors
-                }
-            }
-        }, KEEPALIVE_INTERVAL_MS);
-    }
+    // Flux has no client keep-alive (it rejects {type:"KeepAlive"}); the audio
+    // stream itself keeps the socket alive. clearKeepAlive() is retained as a
+    // harmless no-op for the legacy timer field so existing call sites are safe.
 
     private clearKeepAlive(): void {
         if (this.keepAliveTimer) {
