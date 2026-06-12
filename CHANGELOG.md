@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.0-oss-beta.3] - 2026-06-12
+
+### Fixed
+
+- **No transcription (mic or system audio).** The Deepgram STT stream entered a perpetual connect→close→reconnect storm when the system-audio sample rate was corrected from its initial 48000Hz guess to the real device rate (~1s after capture start). `setSampleRate` did a synchronous restart that closed a still-connecting WebSocket — throwing "WebSocket was closed before the connection was established" — so no transcript ever came back. Rate/config changes now debounce into a single race-safe reconnect that holds, restoring transcription on both streams.
+
 ## [2.2.0-oss-beta.2] - 2026-06-12
 
 ### Cross-Platform Release
