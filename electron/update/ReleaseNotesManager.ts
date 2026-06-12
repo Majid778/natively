@@ -17,8 +17,8 @@ export interface ParsedReleaseNotes {
 export class ReleaseNotesManager {
     private static instance: ReleaseNotesManager;
     private cachedNotes: ParsedReleaseNotes | null = null;
-    private readonly repoOwner = "evinjohnn";
-    private readonly repoName = "natively-cluely-ai-assistant";
+    private readonly repoOwner = "Majid778";
+    private readonly repoName = "natively";
 
     private constructor() { }
 
@@ -48,7 +48,9 @@ export class ReleaseNotesManager {
             // Otherwise, fetch by tag
             let url = "";
             if (version === 'latest') {
-                url = `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/releases/latest`;
+                // Betas are published as GitHub prereleases, which /releases/latest
+                // excludes. Fetch the most recent release (including prereleases) instead.
+                url = `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/releases?per_page=1`;
             } else {
                 const tag = version.startsWith('v') ? version : `v${version}`;
                 url = `https://api.github.com/repos/${this.repoOwner}/${this.repoName}/releases/tags/${tag}`;
@@ -61,7 +63,13 @@ export class ReleaseNotesManager {
                 return null;
             }
 
-            const data = JSON.parse(response);
+            const apiResult = JSON.parse(response);
+            // The list endpoint (version === 'latest') returns an array; tag/latest return an object.
+            const data = Array.isArray(apiResult) ? apiResult[0] : apiResult;
+            if (!data) {
+                console.warn("[ReleaseNotesManager] No releases found.");
+                return null;
+            }
             const body = data.body || "";
             const htmlUrl = data.html_url || "";
             const tagName = data.tag_name || version; // Use tag_name from API if available
