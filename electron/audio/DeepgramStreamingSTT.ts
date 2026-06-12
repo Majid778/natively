@@ -32,6 +32,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
     private reconnectAttempts = 0;
     private reconnectTimer: NodeJS.Timeout | null = null;
     private keepAliveTimer: NodeJS.Timeout | null = null;
+    private restartTimer: NodeJS.Timeout | null = null;
     private buffer: Buffer[] = [];
     private isConnecting = false;
 
@@ -50,13 +51,14 @@ export class DeepgramStreamingSTT extends EventEmitter {
         console.log(`[DeepgramStreaming] Sample rate set to ${rate}`);
 
         if (this.isActive) {
-            console.log('[DeepgramStreaming] Sample rate changed while active. Restarting...');
-            const savedBuffer = [...this.buffer];
-            this.stop();
-            this.start();
-            if (savedBuffer.length > 0) {
-                this.buffer = [...savedBuffer, ...this.buffer];
-            }
+            // The device's real sample rate often arrives ~1s after capture starts
+            // (an initial guess of 48000, corrected to e.g. 44100). Deepgram needs the
+            // rate in the connection URL, so a change requires a fresh socket — but a
+            // synchronous stop()+start() races the in-flight handshake and throws
+            // "WebSocket was closed before the connection was established", leaving the
+            // stream in a reconnect storm that never delivers transcripts. Debounce the
+            // change and reconnect race-safely instead.
+            this.scheduleRestart();
         }
     }
 
@@ -74,15 +76,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
             if (this.isActive) {
                 console.log('[DeepgramStreaming] Language changed while active. Restarting...');
-                // EC-02 fix: save the buffer so in-flight chunks are not discarded
-                // when stop() clears this.buffer.
-                const savedBuffer = [...this.buffer];
-                this.stop();
-                this.start();
-                // Restore saved chunks so they are sent once reconnected
-                if (savedBuffer.length > 0) {
-                    this.buffer = [...savedBuffer, ...this.buffer];
-                }
+                this.scheduleRestart();
             }
         }
     }
@@ -107,24 +101,54 @@ export class DeepgramStreamingSTT extends EventEmitter {
     public stop(): void {
         this.shouldReconnect = false;
         this.clearTimers();
-
-        if (this.ws) {
-            try {
-                // Send Deepgram's graceful close message
-                if (this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ type: 'CloseStream' }));
-                }
-            } catch {
-                // Ignore send errors during shutdown
-            }
-            this.ws.close();
-            this.ws = null;
-        }
-
+        this.teardownSocket();
         this.isActive = false;
-        this.isConnecting = false;
         this.buffer = [];
         console.log('[DeepgramStreaming] Stopped');
+    }
+
+    /**
+     * Close and discard the current socket without throwing or arming the
+     * auto-reconnect path. Safe to call while the socket is still CONNECTING:
+     * detaching listeners first prevents the ws library's
+     * "WebSocket was closed before the connection was established" error, and
+     * terminate() kills a half-open handshake cleanly. Does NOT clear the audio
+     * buffer, so buffered chunks survive into the next connection.
+     */
+    private teardownSocket(): void {
+        this.clearKeepAlive();
+        const ws = this.ws;
+        this.ws = null;
+        this.isConnecting = false;
+        if (!ws) return;
+        ws.removeAllListeners();
+        ws.on('error', () => { /* swallow late errors from the discarded socket */ });
+        try {
+            if (ws.readyState === WebSocket.OPEN) {
+                try { ws.send(JSON.stringify({ type: 'CloseStream' })); } catch { /* ignore */ }
+                ws.close();
+            } else {
+                // CONNECTING or CLOSING — calling close() now would throw; kill quietly.
+                ws.terminate();
+            }
+        } catch { /* ignore */ }
+    }
+
+    /**
+     * Coalesce rapid config changes (e.g. the initial sample-rate correction)
+     * into a single clean reconnect shortly after the last change, instead of
+     * restarting the socket synchronously mid-handshake.
+     */
+    private scheduleRestart(): void {
+        if (this.restartTimer) clearTimeout(this.restartTimer);
+        this.restartTimer = setTimeout(() => {
+            this.restartTimer = null;
+            if (!this.isActive) return;
+            this.teardownSocket();
+            if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+            this.reconnectAttempts = 0;
+            this.connect();
+        }, 300);
     }
 
     // =========================================================================
@@ -138,7 +162,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
             this.buffer.push(chunk);
             if (this.buffer.length > 500) this.buffer.shift(); // Cap buffer size
             
-            if (!this.isConnecting && this.shouldReconnect && !this.reconnectTimer) {
+            if (!this.isConnecting && this.shouldReconnect && !this.reconnectTimer && !this.restartTimer) {
                 console.log('[DeepgramStreaming] WS not ready. Lazy connecting on new audio...');
                 this.connect();
             }
@@ -299,6 +323,10 @@ export class DeepgramStreamingSTT extends EventEmitter {
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
+        }
+        if (this.restartTimer) {
+            clearTimeout(this.restartTimer);
+            this.restartTimer = null;
         }
     }
 }
