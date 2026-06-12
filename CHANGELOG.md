@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.0-oss-beta.4] - 2026-06-12
+
+### Fixed
+
+- **In-app auto-update for beta builds.** Updates never appeared (`No published versions on GitHub`) because releases are GitHub prereleases: electron-updater hit the stable-only `/releases/latest` (404), the release-notes/manual-check code pointed at the wrong repo and the same stable-only endpoint, and the version comparison stripped the `-oss-beta.N` suffix (every beta looked "up to date"). Set `allowPrerelease`, corrected the repo + endpoint, and gave version comparison proper SemVer pre-release ordering. From this build onward the updater finds new betas automatically (beta.4 is the last manual install).
+
 ## [2.2.0-oss-beta.3] - 2026-06-12
 
 ### Fixed
