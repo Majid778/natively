@@ -169,6 +169,10 @@ interface ElectronAPI {
   onMeetingAudioError: (callback: (message: string) => void) => () => void
   onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
   openScreenRecordingSettings: () => Promise<void>
+  openMicrophoneSettings: () => Promise<void>
+  getPermissionsStatus: () => Promise<{ microphone: string; screenRecording: string }>
+  requestMicrophonePermission: () => Promise<{ granted: boolean }>
+  requestScreenRecordingPermission: () => Promise<{ status: string }>
   generateModePrompt: (payload: { description: string }) => Promise<{ success: boolean; prompt?: string; error?: string }>
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
@@ -458,6 +462,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   toggleAdvancedSettings: () => ipcRenderer.invoke("toggle-advanced-settings"),
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
   openScreenRecordingSettings: () => ipcRenderer.invoke("open-screen-recording-settings"),
+  openMicrophoneSettings: () => ipcRenderer.invoke("open-microphone-settings"),
+  getPermissionsStatus: () => ipcRenderer.invoke("get-permissions-status"),
+  requestMicrophonePermission: () => ipcRenderer.invoke("request-microphone-permission"),
+  requestScreenRecordingPermission: () => ipcRenderer.invoke("request-screen-recording-permission"),
   generateModePrompt: (payload: { description: string }) =>
     ipcRenderer.invoke("generate-mode-prompt", payload),
   setUndetectable: (state: boolean) => ipcRenderer.invoke("set-undetectable", state),

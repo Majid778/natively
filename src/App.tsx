@@ -7,6 +7,7 @@ import Launcher from "./components/Launcher"
 import ModelSelectorWindow from "./components/ModelSelectorWindow"
 import SettingsOverlay from "./components/SettingsOverlay"
 import StartupSequence from "./components/StartupSequence"
+import Onboarding from "./components/Onboarding"
 import { AnimatePresence, motion } from "framer-motion"
 import UpdateBanner from "./components/UpdateBanner"
 import { AlertCircle } from "lucide-react"
@@ -71,6 +72,14 @@ const App: React.FC = () => {
 
   // State
   const [showStartup, setShowStartup] = useState(true);
+  // First-run guided onboarding (keys, permissions, how-to). Shows once.
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('hasOnboarded') !== 'true';
+    } catch {
+      return false;
+    }
+  });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
 
@@ -291,7 +300,22 @@ const App: React.FC = () => {
     <ErrorBoundary context="Launcher">
     <div className="h-full min-h-0 w-full relative bg-[#000000]">
       <AnimatePresence>
-        {showStartup ? (
+        {showOnboarding ? (
+          <motion.div
+            key="onboarding"
+            className="h-full w-full"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0, transition: { duration: 0.4, ease: "easeInOut" } }}
+          >
+            <Onboarding
+              onComplete={() => {
+                try { localStorage.setItem('hasOnboarded', 'true'); } catch { /* ignore */ }
+                setShowOnboarding(false);
+              }}
+            />
+          </motion.div>
+        ) : showStartup ? (
           <motion.div
             key="startup"
             initial={{ opacity: 1 }}

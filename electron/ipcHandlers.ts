@@ -1801,10 +1801,47 @@ Output ONLY the system prompt text itself — no preamble, no surrounding quotes
     }
   });
 
-  // Opens macOS System Settings → Privacy & Security → Screen Recording.
+  // Opens macOS System Settings > Privacy & Security > Screen Recording.
   // Separate from open-external because that handler only allows http/https/mailto.
   safeHandle("open-screen-recording-settings", async () => {
     await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+  });
+
+  safeHandle("open-microphone-settings", async () => {
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+  });
+
+  // Current macOS permission status, for the first-run permissions screen.
+  safeHandle("get-permissions-status", async () => {
+    if (process.platform !== 'darwin') return { microphone: 'granted', screenRecording: 'granted' };
+    return {
+      microphone: systemPreferences.getMediaAccessStatus('microphone'),
+      screenRecording: systemPreferences.getMediaAccessStatus('screen'),
+    };
+  });
+
+  // Trigger the macOS microphone permission prompt. No-op if already granted or non-mac.
+  safeHandle("request-microphone-permission", async () => {
+    if (process.platform !== 'darwin') return { granted: true };
+    if (systemPreferences.getMediaAccessStatus('microphone') === 'granted') return { granted: true };
+    try {
+      const granted = await systemPreferences.askForMediaAccess('microphone');
+      return { granted };
+    } catch {
+      return { granted: false };
+    }
+  });
+
+  // macOS has no askForMediaAccess('screen'). Touching a screen-capture API triggers the
+  // first-time prompt; after that the user grants it in System Settings, so open that pane.
+  safeHandle("request-screen-recording-permission", async () => {
+    if (process.platform !== 'darwin') return { status: 'granted' };
+    try { await desktopCapturer.getSources({ types: ['screen'] }); } catch { /* ignore */ }
+    const status = systemPreferences.getMediaAccessStatus('screen');
+    if (status !== 'granted') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+    }
+    return { status };
   });
 
   // ==========================================
