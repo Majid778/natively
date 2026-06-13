@@ -14,7 +14,14 @@ DEST="/Applications/$APP_NAME"
 echo "▶ Building local app (arm64, --dir, unsigned)…"
 npm run build
 npm run build:electron
-npm run build:native
+# Reuse the prebuilt native module — it rarely changes and the napi rebuild is the
+# slow/fragile part. Only rebuild if it's missing. Pass REBUILD_NATIVE=1 to force.
+if [ "${REBUILD_NATIVE:-0}" = "1" ] || [ ! -f native-module/index.darwin-arm64.node ]; then
+  echo "▶ Building native module…"
+  npm run build:native
+else
+  echo "▶ Reusing prebuilt native module (set REBUILD_NATIVE=1 to force a rebuild)."
+fi
 npx electron-builder --mac dir --arm64 --publish never
 
 BUILT="$(ls -d release/mac*/*.app 2>/dev/null | head -1)"
