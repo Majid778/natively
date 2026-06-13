@@ -20,7 +20,9 @@
     "build:native": "node scripts/build-native.js",
     "dist:win": "npm run build && npm run build:electron && npm run build:native && electron-builder --win nsis portable --x64 --publish never",
     "dist:mac": "npm run build && npm run build:electron && cross-env NATIVELY_BUILD_ALL_MAC_ARCHES=1 npm run build:native && electron-builder --mac dmg zip --x64 --arm64 --publish never",
-    "dist:win:dir": "npm run build && npm run build:electron && npm run build:native && electron-builder --win dir --x64 --publish never"
+    "dist:win:dir": "npm run build && npm run build:electron && npm run build:native && electron-builder --win dir --x64 --publish never",
+    "dist:mac:dir": "npm run build && npm run build:electron && npm run build:native && electron-builder --mac dir --arm64 --publish never",
+    "update:local": "bash scripts/update-local-mac.sh"
   },
   "build": {
     "generateUpdatesFilesForAllChannels": true,
