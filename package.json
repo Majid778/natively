@@ -1,6 +1,6 @@
 {
   "name": "natively",
-  "version": "2.2.0-oss-beta.7",
+  "version": "2.2.0-oss-beta.8",
   "main": "dist-electron/electron/main.js",
   "description": "A friend-ready AI meeting copilot with OpenRouter text AI and Deepgram transcription.",
   "scripts": {
