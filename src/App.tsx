@@ -89,6 +89,7 @@ const App: React.FC = () => {
   // Re-index State
   const [incompatibleWarning, setIncompatibleWarning] = useState<{count: number; oldProvider: string; newProvider: string} | null>(null);
   const [meetingAudioError, setMeetingAudioError] = useState<string | null>(null);
+  const [screenRecordingDenied, setScreenRecordingDenied] = useState<boolean>(false);
   
   useEffect(() => {
     // Clean up old local storage
@@ -113,10 +114,18 @@ const App: React.FC = () => {
       });
     }
 
+    let removeScreenRecDenied: (() => void) | undefined;
+    if (window.electronAPI?.onSystemAudioPermissionDenied) {
+      removeScreenRecDenied = window.electronAPI.onSystemAudioPermissionDenied(() => {
+        setScreenRecordingDenied(true);
+      });
+    }
+
     return () => {
       if (removeMeetingsListener) removeMeetingsListener();
       if (removeWarning) removeWarning();
       if (removeMeetingAudioError) removeMeetingAudioError();
+      if (removeScreenRecDenied) removeScreenRecDenied();
     }
   }, []);
 
@@ -400,6 +409,39 @@ const App: React.FC = () => {
                   Open settings
                 </button>
               )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {screenRecordingDenied && isDefault && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.97 }}
+            className="fixed bottom-6 left-6 z-50 pointer-events-auto"
+          >
+            <div className="bg-[#1A1A1A] border border-amber-500/30 shadow-2xl rounded-2xl p-4 max-w-[420px] flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="text-[#E0E0E0] font-medium text-sm">System audio is off</h3>
+                <p className="text-[#A0A0A0] text-xs mt-1 leading-relaxed">
+                  The other person won't be transcribed until you grant Screen Recording, then restart the app. Your microphone still works.
+                </p>
+              </div>
+              <button
+                onClick={() => setScreenRecordingDenied(false)}
+                className="text-xs px-3 py-1.5 rounded-lg text-[#A0A0A0] hover:text-white hover:bg-white/5 transition-colors"
+              >
+                Dismiss
+              </button>
+              <button
+                onClick={() => window.electronAPI?.openScreenRecordingSettings?.()}
+                className="text-xs px-3 py-1.5 rounded-lg text-white bg-white/10 hover:bg-white/15 transition-colors whitespace-nowrap"
+              >
+                Open settings
+              </button>
             </div>
           </motion.div>
         )}

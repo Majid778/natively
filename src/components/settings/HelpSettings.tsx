@@ -94,9 +94,10 @@ npm run dist:mac   # macOS .dmg</pre>
             <p>Unsigned builds may warn: Windows SmartScreen (More info → Run anyway) or macOS Gatekeeper (right-click → Open).</p>
           </Card>
 
-          <Card title="Audio Permissions" icon={<Mic size={16} />}>
-            <p>Allow microphone access for your OS, and grant Screen Recording on macOS so system audio can be captured. Make sure audio is playing through the selected output device.</p>
-            <p>If transcription is empty, test with a YouTube video and verify the native audio module is available.</p>
+          <Card title="Microphone & System Audio" icon={<Mic size={16} />}>
+            <p><strong className="text-text-primary">Your voice</strong> needs microphone access.</p>
+            <p><strong className="text-text-primary">The other person</strong> is captured from system audio, which on macOS needs <strong className="text-text-primary">Screen Recording</strong> permission. The mic works without it — so if you're transcribed but they aren't, grant Screen Recording in System Settings → Privacy &amp; Security, then restart the app.</p>
+            <p>Also make sure the call's audio is playing through your selected output device.</p>
           </Card>
 
           <Card title="Model Modes" icon={<KeyRound size={16} />}>
@@ -112,10 +113,11 @@ npm run dist:mac   # macOS .dmg</pre>
 
         <Card title="Troubleshooting" icon={<Wrench size={16} />}>
           <ul className="list-disc pl-5 space-y-1">
-            <li>If the app opens directly into meeting mode, stop the meeting and restart the app. That behavior should be treated as a bug.</li>
-            <li>If native audio is unavailable, close the app and run <code className="px-1 py-0.5 rounded bg-bg-input">npm run build:native</code> in development.</li>
-            <li>If transcription fails, re-open AI Providers, save the Deepgram key, and run the transcription test.</li>
-            <li>If AI responses fail, re-open AI Providers and verify the OpenRouter key.</li>
+            <li>Hearing yourself but not the other person? Grant macOS Screen Recording (see above) and restart — that's what captures system audio.</li>
+            <li>If transcription stays empty, re-open AI Providers, re-save your Deepgram key, and run the transcription test.</li>
+            <li>If AI responses fail, re-open AI Providers and check your OpenRouter key.</li>
+            <li>If the app opens straight into a meeting, stop it and restart the app.</li>
+            <li>If native audio is unavailable, quit the app and run <code className="px-1 py-0.5 rounded bg-bg-input">npm run build:native</code>.</li>
           </ul>
         </Card>
 

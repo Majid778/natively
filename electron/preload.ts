@@ -167,6 +167,9 @@ interface ElectronAPI {
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
   onMeetingAudioError: (callback: (message: string) => void) => () => void
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  openScreenRecordingSettings: () => Promise<void>
+  generateModePrompt: (payload: { description: string }) => Promise<{ success: boolean; prompt?: string; error?: string }>
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   onToggleExpand: (callback: () => void) => () => void
@@ -437,6 +440,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('meeting-audio-error', subscription);
     return () => { ipcRenderer.removeListener('meeting-audio-error', subscription); };
   },
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => {
+    const subscription = (_: any, message: string) => callback(message);
+    ipcRenderer.on('system-audio-permission-denied', subscription);
+    return () => { ipcRenderer.removeListener('system-audio-permission-denied', subscription); };
+  },
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => {
     const subscription = (_: any, isMaximized: boolean) => callback(isMaximized);
     ipcRenderer.on('window-maximized-changed', subscription);
@@ -449,6 +457,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   toggleAdvancedSettings: () => ipcRenderer.invoke("toggle-advanced-settings"),
   openExternal: (url: string) => ipcRenderer.invoke("open-external", url),
+  openScreenRecordingSettings: () => ipcRenderer.invoke("open-screen-recording-settings"),
+  generateModePrompt: (payload: { description: string }) =>
+    ipcRenderer.invoke("generate-mode-prompt", payload),
   setUndetectable: (state: boolean) => ipcRenderer.invoke("set-undetectable", state),
   getUndetectable: () => ipcRenderer.invoke("get-undetectable"),
   setOverlayMousePassthrough: (enabled: boolean) => ipcRenderer.invoke("set-overlay-mouse-passthrough", enabled),

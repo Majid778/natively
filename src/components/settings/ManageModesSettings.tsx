@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, Edit2, FileText, MoreHorizontal, Plus, Save, Trash2, Upload, X } from 'lucide-react';
+import { Check, ChevronDown, Edit2, FileText, MoreHorizontal, Plus, Save, Sparkles, Trash2, Upload, X } from 'lucide-react';
 
 type ModeReferenceFile = {
   id: string;
@@ -102,6 +102,12 @@ export const ManageModesSettings: React.FC = () => {
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const modeMenuRef = useRef<HTMLDivElement | null>(null);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // AI mode-prompt generator (freeform description → fills the prompt box)
+  const [isGenOpen, setIsGenOpen] = useState(false);
+  const [genDesc, setGenDesc] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -224,6 +230,32 @@ export const ManageModesSettings: React.FC = () => {
     setStatusMessage('');
     setErrorMessage('');
     await persistConfig(nextModes, newMode.id, newMode.id);
+  };
+
+  const handleGenerate = async () => {
+    if (!selectedModeId) return;
+    if (!window.electronAPI?.generateModePrompt) {
+      setGenError('Prompt generation is unavailable in this build.');
+      return;
+    }
+    if (!genDesc.trim()) {
+      setGenError('Describe what you want this mode to do first.');
+      return;
+    }
+    setGenerating(true);
+    setGenError('');
+    try {
+      const res = await window.electronAPI.generateModePrompt({ description: genDesc.trim() });
+      if (!res?.success || !res.prompt) {
+        throw new Error(res?.error || 'No prompt was generated.');
+      }
+      updateSelectedMode({ prompt: res.prompt });
+      setIsGenOpen(false);
+    } catch (error: any) {
+      setGenError(error?.message || 'Failed to generate prompt.');
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const handleDeleteSelected = async () => {
@@ -373,7 +405,7 @@ export const ManageModesSettings: React.FC = () => {
 
       {selectedMode ? (
         <div className="space-y-3">
-          <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-3 flex items-start justify-between gap-3">
+          <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-3 flex items-center justify-between gap-3">
             <div className="relative w-full max-w-[560px]" ref={modeMenuRef}>
               <button
                 onClick={() => setIsModeMenuOpen((open) => !open)}
@@ -481,7 +513,61 @@ export const ManageModesSettings: React.FC = () => {
           </div>
 
           <div className="space-y-1.5">
-            <div className="text-base font-semibold text-text-primary">Real-time prompt</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-base font-semibold text-text-primary">Real-time prompt</div>
+              <button
+                onClick={() => { setGenError(''); setIsGenOpen((v) => !v); }}
+                className="inline-flex items-center gap-1 text-xs text-text-tertiary hover:text-text-primary transition-colors"
+                title="Generate this prompt from a short description"
+              >
+                <Sparkles size={12} className="text-accent-primary" />
+                Generate with AI
+              </button>
+            </div>
+
+            {isGenOpen && (
+              <div className="rounded-xl border border-accent-primary/30 bg-bg-elevated p-3 space-y-2">
+                <textarea
+                  value={genDesc}
+                  onChange={(e) => setGenDesc(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); void handleGenerate(); }
+                  }}
+                  placeholder="Describe this mode in a sentence — e.g. interview copilot for a senior backend role; concise STAR answers in my own voice, calm and confident."
+                  className="w-full h-16 resize-none bg-bg-input border border-border-subtle rounded-lg px-3 py-2 text-sm text-text-primary placeholder-text-tertiary focus:outline-none focus:border-accent-primary/50 custom-scrollbar"
+                  spellCheck={false}
+                  autoFocus
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] min-w-0 truncate">
+                    {genError
+                      ? <span className="text-red-500">{genError}</span>
+                      : <span className="text-text-tertiary">Replaces the prompt below — you can edit after.</span>}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => setIsGenOpen(false)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border-subtle bg-bg-input text-text-secondary hover:text-text-primary transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => void handleGenerate()}
+                      disabled={generating || !genDesc.trim()}
+                      className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-colors inline-flex items-center gap-1.5 ${
+                        generating || !genDesc.trim()
+                          ? 'bg-bg-input text-text-tertiary border border-border-subtle cursor-not-allowed'
+                          : 'bg-text-primary text-bg-main hover:opacity-90'
+                      }`}
+                    >
+                      <Sparkles size={12} />
+                      {generating ? 'Generating…' : 'Generate'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="relative rounded-xl border border-border-subtle bg-bg-input transition-colors focus-within:border-accent-primary/50">
               <textarea
                 value={selectedMode.prompt}

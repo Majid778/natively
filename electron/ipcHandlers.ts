@@ -241,6 +241,45 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   })
 
+  // Turn a freeform description into a Mode (copilot system) prompt. Calls the
+  // user's CONFIGURED text model with skipSystemPrompt=true so no copilot mode or
+  // meeting context leaks in. Returns one polished prompt.
+  safeHandle("generate-mode-prompt", async (_event, payload: { description?: string }) => {
+    try {
+      const description = (payload?.description || '').trim();
+      if (!description) {
+        return { success: false, error: 'Describe what you want this mode to do first.' };
+      }
+
+      const metaPrompt = `You write a SYSTEM PROMPT for a real-time spoken copilot. The prompt you produce is injected before live-call context; the model's output is read aloud or paraphrased by the user in the moment. The system prompt you write must instruct the copilot to:
+- speak in the FIRST PERSON as the user (generate what THEY should say),
+- produce CONCISE, natural, speakable lines suited to a live call — never essays,
+- stay confident, specific, and practical, and never invent facts about the user,
+- fit what the user describes below.
+
+What the user wants:
+${description}
+
+Output ONLY the system prompt text itself — no preamble, no surrounding quotes, no markdown, no explanation.`;
+
+      const llm = appState.processingHelper.getLLMHelper();
+      const raw = await llm.chatWithGemini(metaPrompt, undefined, undefined, true);
+      const prompt = (raw || '')
+        .trim()
+        .replace(/^```[a-zA-Z]*\n?/, '')
+        .replace(/\n?```$/, '')
+        .replace(/^["']|["']$/g, '')
+        .trim();
+
+      if (!prompt) {
+        return { success: false, error: 'No prompt was generated. Check your text model key in AI Providers.' };
+      }
+      return { success: true, prompt };
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'Failed to generate prompt.' };
+    }
+  })
+
   safeHandle("finalize-mic-stt", async () => {
     appState.finalizeMicSTT();
   });
@@ -1760,6 +1799,12 @@ export function initializeIpcHandlers(appState: AppState): void {
     } catch {
       console.warn(`[IPC] Invalid URL in open-external: ${url}`);
     }
+  });
+
+  // Opens macOS System Settings → Privacy & Security → Screen Recording.
+  // Separate from open-external because that handler only allows http/https/mailto.
+  safeHandle("open-screen-recording-settings", async () => {
+    await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
   });
 
   // ==========================================

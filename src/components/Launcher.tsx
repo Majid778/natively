@@ -601,7 +601,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                     </div>
 
                                     {/* 2. Hero Section Cards */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 h-[198px]">
+                                    <div className={`grid grid-cols-1 md:grid-cols-3 gap-3 ${((isPrepared && preparedEvent) || nextMeeting) ? 'h-[198px]' : 'h-0'}`}>
                                         {/* PREPARED STATE CARD */}
                                         {isPrepared && preparedEvent ? (
                                             <div className={`md:col-span-3 relative group rounded-xl overflow-hidden border border-emerald-500/30 ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col items-center justify-center p-6 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-900/40 ${isLight ? 'via-bg-elevated to-bg-elevated' : 'via-bg-secondary to-bg-secondary'}`}>
@@ -690,11 +690,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     {/* Background Decoration */}
                                                     <div className="absolute top-0 right-0 w-[150px] h-[150px] bg-emerald-500/10 blur-[60px] pointer-events-none" />
                                                 </div>
-                                            ) : (
-                                                <div className={`md:col-span-3 h-full rounded-xl border ${isLight ? 'border-border-muted bg-bg-elevated' : 'border-white/10 bg-bg-secondary'} flex items-center justify-center px-6`}>
-                                                    <p className="text-sm text-text-secondary">No upcoming meetings in the next hour.</p>
-                                                </div>
-                                            )
+                                            ) : null
                                         )}
                                     </div>
                                 </div>

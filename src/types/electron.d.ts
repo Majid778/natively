@@ -50,6 +50,9 @@ export interface ElectronAPI {
   getMeetingActive: () => Promise<boolean>
   onMeetingStateChanged: (callback: (data: { isActive: boolean }) => void) => () => void
   onMeetingAudioError: (callback: (message: string) => void) => () => void
+  onSystemAudioPermissionDenied: (callback: (message: string) => void) => () => void
+  openScreenRecordingSettings: () => Promise<void>
+  generateModePrompt: (payload: { description: string }) => Promise<{ success: boolean; prompt?: string; error?: string }>
   onWindowMaximizedChanged: (callback: (isMaximized: boolean) => void) => () => void
   onEnsureExpanded: (callback: () => void) => () => void
   openExternal: (url: string) => Promise<void>
