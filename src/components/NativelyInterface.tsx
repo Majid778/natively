@@ -102,7 +102,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return () => window.removeEventListener('storage', handleStorage);
     }, []);
 
-    const [rollingTranscript, setRollingTranscript] = useState('');  // For interviewer rolling text bar
+    const [rollingTranscript, setRollingTranscript] = useState('');  // Finalized turns (committed)
+    const [partialTranscript, setPartialTranscript] = useState('');  // In-progress live partial
     const [isInterviewerSpeaking, setIsInterviewerSpeaking] = useState(false);  // Track if actively speaking
     const [voiceInput, setVoiceInput] = useState('');  // Accumulated user voice input
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
@@ -412,39 +413,21 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 return;  // Don't add to messages while recording
             }
 
-            // Ignore user mic transcripts when not recording
-            // Only interviewer (system audio) transcripts should appear in chat
-            if (transcript.speaker === 'user') {
-                return;  // Skip user mic input - only relevant when Answer button is active
-            }
+            // Live transcript HUD: show BOTH the user's mic and the interviewer/system
+            // audio in the rolling bar at the top, as it is being said.
 
-            // Only show interviewer (system audio) transcripts in rolling bar
-            if (transcript.speaker !== 'interviewer') {
-                return;  // Safety check for any other speaker types
-            }
-
-            // Route to rolling transcript bar - accumulate text continuously
+            // Route to the rolling transcript bar. Keep finalized turns separate from
+            // the in-progress partial so a turn isn't shown twice: partials update
+            // `partialTranscript` (live preview); on the final, commit it once to
+            // `rollingTranscript` and clear the partial.
             setIsInterviewerSpeaking(!transcript.final);
 
             if (transcript.final) {
-                // Append finalized text to accumulated transcript
-                setRollingTranscript(prev => {
-                    const separator = prev ? '  ·  ' : '';
-                    return prev + separator + transcript.text;
-                });
-
-                // Clear speaking indicator after pause
-                setTimeout(() => {
-                    setIsInterviewerSpeaking(false);
-                }, 3000);
+                setRollingTranscript(prev => prev + (prev ? '  ·  ' : '') + transcript.text);
+                setPartialTranscript('');
+                setTimeout(() => setIsInterviewerSpeaking(false), 3000);
             } else {
-                // For partial transcripts, show current segment appended to accumulated
-                setRollingTranscript(prev => {
-                    // Find where previous finalized content ends (look for last separator)
-                    const lastSeparator = prev.lastIndexOf('  ·  ');
-                    const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                    return accumulated + transcript.text;
-                });
+                setPartialTranscript(transcript.text);
             }
         }));
 
@@ -1367,7 +1350,7 @@ Provide only the answer, nothing else.`;
 
     const renderMessageText = (msg: Message) => {
         // Code-containing messages get special styling
-        // We split by code blocks to keep the "Code Solution" UI intact for the code parts
+        // We split by code blocks to keep the "Code Hint" UI intact for the code parts
         // But use ReactMarkdown for the text parts around it
         if (msg.isCode || (msg.role === 'system' && msg.text.includes('```'))) {
             const parts = msg.text.split(/(```[\s\S]*?```)/g);
@@ -1375,7 +1358,7 @@ Provide only the answer, nothing else.`;
                 <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
                     <div className={`flex items-center gap-2 mb-2 font-semibold text-xs uppercase tracking-wide ${isLightTheme ? 'text-violet-600' : 'text-purple-300'}`}>
                         <Code className="w-3.5 h-3.5" />
-                        <span>Code Solution</span>
+                        <span>Code Hint</span>
                     </div>
                     <div className={`space-y-2 text-[13px] leading-relaxed ${isLightTheme ? 'text-slate-800' : 'text-slate-200'}`}>
                         {parts.map((part, i) => {
@@ -1910,21 +1893,16 @@ Provide only the answer, nothing else.`;
                             />
                         </div>
                         <div
-                            className={`relative w-[600px] max-w-full backdrop-blur-2xl border rounded-[24px] overflow-hidden flex flex-col overlay-shell-surface ${overlayPanelClass}`}
+                            className={`draggable-area relative w-[600px] max-w-full backdrop-blur-2xl border rounded-[24px] overflow-hidden flex flex-col overlay-shell-surface ${overlayPanelClass}`}
                             style={appearance.shellStyle}
                         >
-
-
-
-
-                            {/* Rolling Transcript Bar - Single-line interviewer speech */}
-                            {(rollingTranscript || isInterviewerSpeaking) && showTranscript && (
-                                <RollingTranscript
-                                    text={rollingTranscript}
-                                    isActive={isInterviewerSpeaking}
-                                    surfaceStyle={appearance.transcriptStyle}
-                                />
-                            )}
+                            {/* Live Transcript Bar — always visible at the top of the HUD.
+                                Shows committed turns + the in-progress partial. */}
+                            <RollingTranscript
+                                text={[rollingTranscript, partialTranscript].filter(Boolean).join('  ·  ') || 'Listening…'}
+                                isActive={isInterviewerSpeaking}
+                                surfaceStyle={appearance.transcriptStyle}
+                            />
 
                             {/* Chat History - Only show if there are messages OR active states */}
                             {(messages.length > 0 || isManualRecording || isProcessing) && (
@@ -2008,7 +1986,7 @@ Provide only the answer, nothing else.`;
                                 </div>
                             )}
 
-                            {/* Quick Actions - Minimal & Clean */}
+                            {/* Quick Actions - AI response buttons */}
                             <div className={`flex flex-nowrap justify-center items-center gap-1.5 px-4 pb-3 overflow-x-hidden ${rollingTranscript && showTranscript ? 'pt-1' : 'pt-3'}`}>
                                 <button onClick={handleWhatToSay} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all active:scale-95 duration-200 interaction-base interaction-press whitespace-nowrap shrink-0 ${quickActionClass}`} style={appearance.chipStyle}>
                                     <Pencil className="w-3 h-3 opacity-70" /> What to answer?
@@ -2119,123 +2097,6 @@ Provide only the answer, nothing else.`;
                                     )}
                                 </div>
 
-                                {/* Bottom Row */}
-                                <div className="flex items-center justify-between mt-3 px-0.5">
-                                    <div className="flex items-center gap-1.5">
-                                        <button
-                                            onClick={(e) => {
-                                                // Calculate position for detached window
-                                                if (!contentRef.current) return;
-                                                const contentRect = contentRef.current.getBoundingClientRect();
-                                                const buttonRect = e.currentTarget.getBoundingClientRect();
-                                                const GAP = 8;
-
-                                                const x = window.screenX + buttonRect.left;
-                                                const y = window.screenY + contentRect.bottom + GAP;
-
-                                                window.electronAPI.toggleModelSelector({ x, y });
-                                            }}
-                                            className={`
-                                                flex items-center gap-2 px-3 py-1.5
-                                                border rounded-lg transition-colors
-                                                text-xs font-medium w-[270px] max-w-[45vw]
-                                                interaction-base interaction-press
-                                                ${controlSurfaceClass}
-                                            `}
-                                            style={appearance.controlStyle}
-                                        >
-                                            <span className="truncate min-w-0 flex-1">
-                                                {(() => {
-                                                    const m = currentModel;
-                                                    return getModelDisplayName(m);
-                                                })()}
-                                            </span>
-                                            <ChevronDown size={14} className="shrink-0 transition-transform" />
-                                        </button>
-
-                                        <div className="w-px h-3 mx-1" style={appearance.dividerStyle} />
-
-                                        <div className="relative">
-                                            <button
-                                                onClick={(e) => {
-                                                    if (isSettingsOpen) {
-                                                        // If open, just close it (toggle will handle logic but we can be explicit or just toggle)
-                                                        // Actually toggle-settings-window handles hiding if visible, so logic is same.
-                                                        window.electronAPI.toggleSettingsWindow();
-                                                        return;
-                                                    }
-
-                                                    if (!contentRef.current) return;
-
-                                                    const contentRect = contentRef.current.getBoundingClientRect();
-                                                    const buttonRect = e.currentTarget.getBoundingClientRect();
-                                                    const POPUP_WIDTH = 270; // Matches SettingsWindowHelper actual width
-                                                    const GAP = 8; // Same gap as between TopPill and main body (gap-2 = 8px)
-
-                                                    // X: Left-aligned relative to the Settings Button
-                                                    const x = window.screenX + buttonRect.left;
-
-                                                    // Y: Below the main content + gap
-                                                    const y = window.screenY + contentRect.bottom + GAP;
-
-                                                    window.electronAPI.toggleSettingsWindow({ x, y });
-                                                }}
-                                                className={`
-                                            w-7 h-7 flex items-center justify-center rounded-lg
-                                            interaction-base interaction-press
-                                            ${isSettingsOpen
-                                                    ? 'overlay-icon-surface overlay-icon-surface-hover overlay-text-primary'
-                                                    : 'overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive'}
-                                        `}
-
-                                                style={appearance.iconStyle}
-                                            >
-                                                <SlidersHorizontal className="w-3.5 h-3.5" />
-                                            </button>
-                                        </div>
-
-                                        <div className="w-px h-3 mx-1" style={appearance.dividerStyle} />
-
-                                        {/* Mouse Passthrough Toggle */}
-                                        <div className="relative">
-                                            <button
-                                                onClick={() => {
-                                                    const newState = !isMousePassthrough;
-                                                    setIsMousePassthrough(newState);
-                                                    window.electronAPI?.setOverlayMousePassthrough?.(newState);
-                                                }}
-                                                className={`
-                                                    w-7 h-7 flex items-center justify-center rounded-lg
-                                                    interaction-base interaction-press
-                                                    ${isMousePassthrough
-                                                        ? 'overlay-icon-surface overlay-icon-surface-hover text-sky-400 opacity-100'
-                                                        : 'overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive'}
-                                                `}
-
-                                                style={appearance.iconStyle}
-                                            >
-                                                <PointerOff className="w-3.5 h-3.5" />
-                                            </button>
-                                        </div>
-
-                                    </div>
-
-                                    <button
-                                        onClick={handleManualSubmit}
-                                        disabled={!inputValue.trim()}
-                                    className={`
-                                    w-7 h-7 rounded-full flex items-center justify-center
-                                    interaction-base interaction-press
-                                    ${inputValue.trim()
-                                                ? 'bg-[#007AFF] text-white shadow-lg shadow-blue-500/20 hover:bg-[#0071E3]'
-                                                : 'overlay-icon-surface overlay-text-muted cursor-not-allowed'
-                                            }
-                                `}
-                                    style={inputValue.trim() ? undefined : appearance.iconStyle}
-                                    >
-                                        <ArrowRight className="w-3.5 h-3.5" />
-                                    </button>
-                                </div>
                             </div>
                         </div>
                     </motion.div>
