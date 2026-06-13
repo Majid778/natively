@@ -170,17 +170,17 @@ export const AIProvidersSettings: React.FC = () => {
                 curlCommand: buildOpenRouterCurl(key),
                 responsePath: 'choices[0].message.content',
             });
-            if (!saved?.success) throw new Error(saved?.error || 'Failed to save OpenRouter.');
+            if (!saved?.success) throw new Error(saved?.error || "Couldn't save the key.");
 
             const defaultResult = await window.electronAPI?.setDefaultModel?.(OPENROUTER_PROVIDER_ID);
-            if (defaultResult && !defaultResult.success) throw new Error(defaultResult.error || 'Failed to set text model.');
+            if (defaultResult && !defaultResult.success) throw new Error(defaultResult.error || 'Failed to set the model.');
 
             setHasStoredOpenRouterKey(true);
             setOpenRouterStatus('success');
-            setOpenRouterMessage('Text model saved.');
+            setOpenRouterMessage('Responses saved.');
         } catch (error: any) {
             setOpenRouterStatus('error');
-            setOpenRouterMessage(error?.message || 'Failed to save OpenRouter.');
+            setOpenRouterMessage(error?.message || "Couldn't save the key.");
         }
     };
 
@@ -194,13 +194,13 @@ export const AIProvidersSettings: React.FC = () => {
                 'Provider test.',
                 'Reply with OK.'
             );
-            if (!result?.suggestion) throw new Error('No response returned from Gemini Flash.');
+            if (!result?.suggestion) throw new Error('No response from the model.');
 
             setOpenRouterStatus('success');
-            setOpenRouterMessage('Text model works.');
+            setOpenRouterMessage('Responses are working.');
         } catch (error: any) {
             setOpenRouterStatus('error');
-            setOpenRouterMessage(error?.message || 'Gemini Flash test failed.');
+            setOpenRouterMessage(error?.message || "Couldn't get a response. Check your key.");
         }
     };
 
@@ -213,7 +213,7 @@ export const AIProvidersSettings: React.FC = () => {
             if (!key) throw new Error('Paste your Deepgram key first.');
 
             const saved = await window.electronAPI?.setDeepgramApiKey?.(key);
-            if (saved && !saved.success) throw new Error(saved.error || 'Failed to save Deepgram.');
+            if (saved && !saved.success) throw new Error(saved.error || "Couldn't save the key.");
 
             const providerSet = await window.electronAPI?.setSttProvider?.('deepgram');
             if (providerSet && !providerSet.success) throw new Error(providerSet.error || 'Failed to set transcription provider.');
@@ -223,7 +223,7 @@ export const AIProvidersSettings: React.FC = () => {
             setDeepgramMessage('Transcription saved.');
         } catch (error: any) {
             setDeepgramStatus('error');
-            setDeepgramMessage(error?.message || 'Failed to save Deepgram.');
+            setDeepgramMessage(error?.message || "Couldn't save the key.");
         }
     };
 
@@ -237,24 +237,24 @@ export const AIProvidersSettings: React.FC = () => {
 
             setDeepgramMessage('Recording 3 seconds...');
             const sample = await recordMicrophoneSample();
-            setDeepgramMessage('Testing Deepgram...');
+            setDeepgramMessage('Testing transcription...');
 
             const result = await window.electronAPI?.testDeepgramTranscription?.(key, sample.audioBase64, sample.mimeType);
-            if (!result?.success) throw new Error(result?.error || 'Deepgram test failed.');
+            if (!result?.success) throw new Error(result?.error || 'Transcription test failed.');
 
             await window.electronAPI?.setSttProvider?.('deepgram');
             setDeepgramStatus('success');
             setDeepgramMessage(result.transcript ? `Transcribed: "${result.transcript}"` : 'Transcription works.');
         } catch (error: any) {
             setDeepgramStatus('error');
-            setDeepgramMessage(error?.message || 'Deepgram test failed.');
+            setDeepgramMessage(error?.message || 'Transcription test failed.');
         }
     };
 
     return (
         <div className="space-y-3 animated fadeIn pb-8">
             <ProviderCard
-                title="Text AI"
+                title="Responses"
                 badge="Gemini 2.5 Flash"
                 ready={textProviderReady}
                 readyLabel={textProviderReady ? 'Saved' : 'Needs key'}
