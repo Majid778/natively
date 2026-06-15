@@ -80,6 +80,19 @@ exports.default = async function (context) {
     // --deep would otherwise overwrite the entitlement-signed .node files.
     console.log(`[Ad-Hoc Signing] Signing main app ${appPath} with entitlements...`);
 
+    // Strip ALL extended attributes from the bundle before signing. On macOS 14.4+
+    // files carry com.apple.provenance, which `xattr -c` cannot remove and which
+    // makes codesign reject the bundle with "resource fork, Finder information, or
+    // similar detritus not allowed". `ditto --noextattr --norsrc` recreates the
+    // tree without any xattrs/resource forks, which clears provenance too.
+    try {
+        const tmp = `${appPath}.nat-clean`;
+        execSync(`rm -rf "${tmp}" && ditto --noextattr --norsrc "${appPath}" "${tmp}" && rm -rf "${appPath}" && mv "${tmp}" "${appPath}"`, { stdio: 'inherit' });
+        console.log('[Ad-Hoc Signing] Stripped extended attributes (ditto) from the bundle.');
+    } catch (e) {
+        console.warn('[Ad-Hoc Signing] extended-attribute strip failed (continuing):', e?.message || e);
+    }
+
     try {
         // --force: replace existing signature
         // --deep: sign nested code (frameworks, helpers, .dylib, .node)
