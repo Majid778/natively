@@ -155,6 +155,7 @@ import { ProcessingHelper } from "./ProcessingHelper"
 import { IntelligenceManager } from "./IntelligenceManager"
 import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
+import { AudioDevices } from "./audio/AudioDevices"
 import { loadNativeModule } from "./audio/nativeModuleLoader"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
@@ -226,6 +227,8 @@ export class AppState {
 
   private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
+  private _systemAudioSeen: boolean = false; // Watchdog: set true on first system-audio chunk of a meeting
+  private _sysAudioWatchdog: NodeJS.Timeout | null = null; // Cleared on meeting end so it can't fire into the next meeting
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
   private _disguiseTimers: NodeJS.Timeout[] = []; // Track forceUpdate timeouts
@@ -867,12 +870,21 @@ export class AppState {
     try {
       // 1. Initialize Captures if missing
       // If they already exist (e.g. from reconfigureAudio), they are already wired to write to this.googleSTT/User
+      // Apply the same Bluetooth-headset routing as reconfigureAudio so a meeting
+      // started without explicit audio metadata is still safe (built-in mic + SCK).
+      // Only resolve (a native device enumeration) when a capture is actually
+      // missing — on the normal path reconfigureAudio already created both.
+      const needsInit = !this.systemAudioCapture || !this.microphoneCapture;
+      const lazyRouting = needsInit
+        ? this.resolveSafeAudioRouting(undefined, undefined)
+        : { inputDeviceId: undefined as string | undefined, outputDeviceId: undefined as string | undefined };
       if (!this.systemAudioCapture) {
-        this.systemAudioCapture = new SystemAudioCapture();
+        this.systemAudioCapture = new SystemAudioCapture(lazyRouting.outputDeviceId || undefined);
         // Wire Capture -> STT
         let _sysChunkCount = 0;
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
           _sysChunkCount++;
+          this._systemAudioSeen = true;
           if (_sysChunkCount <= 3 || _sysChunkCount % 500 === 0) {
             console.log(`[Main] SystemAudio->STT: chunk #${_sysChunkCount}, ${chunk.length}B, googleSTT=${this.googleSTT ? 'active' : 'NULL'}`);
           }
@@ -892,7 +904,8 @@ export class AppState {
       }
 
       if (!this.microphoneCapture) {
-        this.microphoneCapture = new MicrophoneCapture();
+        // Route the lazy-init default through the same guard (see lazyRouting above).
+        this.microphoneCapture = new MicrophoneCapture(lazyRouting.inputDeviceId || undefined);
         this.microphoneCapture.on('data', (chunk: Buffer) => {
           this.googleSTT_User?.write(chunk);
         });
@@ -946,7 +959,118 @@ export class AppState {
     }
   }
 
+  /**
+   * Resolve safe audio routing around the macOS Bluetooth headset problem.
+   *
+   * A headset that does both playback and capture (AirPods, Bose QC45, etc.) runs
+   * in high-quality A2DP while output-only, but the moment any app OPENS its
+   * microphone, macOS switches the whole device into hands-free (HFP) mode,
+   * collapsing both the mic AND the device's output to ~16 kHz "telephone"
+   * quality. Two consequences when a meeting starts on such a headset:
+   *   1. The user hears the call/video at phone quality (HFP output).
+   *   2. We capture system audio by tapping the output device — and the CoreAudio
+   *      output tap captures only SILENCE from a Bluetooth A2DP device (verified:
+   *      chunks flow but no transcript), while in HFP it captured at 16 kHz.
+   *
+   * So when a combined headset is the output we do BOTH:
+   *   - capture the mic from the BUILT-IN mic (the headset never enters HFP, so
+   *     its A2DP output stays high quality for the user), and
+   *   - capture system audio via ScreenCaptureKit ('sck'), which grabs the system
+   *     mix at the OS level independent of the output device's Bluetooth profile.
+   *
+   * Detection: a physical combined headset exposes the SAME identity in BOTH the
+   * input and output device lists (built-in mic/speakers have different names;
+   * virtual loopback devices like BlackHole are excluded). The two corrections are
+   * decoupled: SCK is forced whenever the OUTPUT is such a headset (fixes the case
+   * of a separate mic + Bluetooth output), and the mic is rerouted to built-in only
+   * when the headset whose mic we'd open is also the output (the HFP trigger).
+   */
+  private resolveSafeAudioRouting(inputDeviceId?: string, outputDeviceId?: string): { inputDeviceId?: string; outputDeviceId?: string } {
+    try {
+      // macOS-only. The fix routes system audio to ScreenCaptureKit to dodge the
+      // macOS CoreAudio A2DP-tap-is-silent quirk; SCK does not exist on Windows
+      // (system audio there is WASAPI loopback). On Windows, forcing 'sck' would
+      // fall back to the DEFAULT render device — overriding an explicit output
+      // choice — and the built-in-mic regex would not match Windows device names.
+      // The Bluetooth HFP problem exists on Windows too, but needs a WASAPI-based
+      // fix and Windows testing; leave non-macOS routing untouched for now.
+      if (process.platform !== 'darwin') return { inputDeviceId, outputDeviceId };
+
+      // Explicit SCK request already bypasses the device tap entirely.
+      if (outputDeviceId === 'sck') return { inputDeviceId, outputDeviceId };
+
+      const inputs = AudioDevices.getInputDevices();
+      const outputs = AudioDevices.getOutputDevices();
+      if (!inputs.length || !outputs.length) return { inputDeviceId, outputDeviceId };
+
+      const isBuiltIn = (n: string) => /built-?in|macbook|imac|mac\s?(mini|studio|pro)/i.test(n);
+      // Virtual / loopback / app devices are not physical headsets even though they
+      // appear in both lists (BlackHole, Teams, aggregate/multi-output, etc.).
+      const isVirtual = (n: string) => /blackhole|loopback|soundflower|vb-?cable|vb-?audio|aggregate|multi-?output|screen recording|teams|zoom|webex|virtual|siphon|ishowu|ndi/i.test(n);
+
+      const ROLE = /\b(microphone|mic|output|input|speakers?|headphones?|headset|stereo|hands[\s-]?free|hands|free|call|2ch)\b/gi;
+      const tokens = (n: string) => n.toLowerCase().replace(ROLE, ' ').split(/[^a-z0-9]+/).filter(t => t.length > 1);
+      // Require >=2 shared identity tokens so generic single-token collisions
+      // (e.g. "External Microphone" vs "External Headphones" -> ["external"]) do
+      // NOT register as the same physical device. Real headsets carry brand+model
+      // (Bose QC45, AirPods Pro, WH-1000XM4, owner-name + model), so 2+ tokens.
+      const subsetOrEqual = (a: string[], b: string[]) => {
+        const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+        return s.length >= 2 && s.every(t => l.includes(t));
+      };
+      const outTokens = outputs.map(o => tokens(o.name));
+      // A physical duplex (Bluetooth/wired) headset: not built-in, not virtual, and
+      // its identity tokens match some output device (token subset, so suffix
+      // variants like "AirPods Pro" vs "AirPods Pro Hands-Free" still match).
+      const isDuplex = (n: string) => !isBuiltIn(n) && !isVirtual(n) && outTokens.some(ot => subsetOrEqual(tokens(n), ot));
+
+      // Safe fallback mic: the built-in by name, else any non-duplex/non-virtual input.
+      const builtIn = inputs.find(d => isBuiltIn(d.name))
+        ?? inputs.find(d => !isDuplex(d.name) && !isVirtual(d.name));
+
+      // Is the mic we'd open part of a duplex headset?
+      const chosenInput = inputDeviceId ? inputs.find(d => d.id === inputDeviceId) : undefined;
+      const micIsHeadset = inputDeviceId
+        ? !!(chosenInput && isDuplex(chosenInput.name))
+        : inputs.some(d => isDuplex(d.name));
+
+      // Is the output we'd tap a duplex headset? (default output → if a physical
+      // headset is connected it is almost certainly what the user is listening on.)
+      const chosenOutput = outputDeviceId ? outputs.find(d => d.id === outputDeviceId) : undefined;
+      const outputIsHeadset = outputDeviceId
+        ? !!(chosenOutput && !isBuiltIn(chosenOutput.name) && !isVirtual(chosenOutput.name)
+            && inputs.some(i => !isBuiltIn(i.name) && !isVirtual(i.name) && subsetOrEqual(tokens(i.name), tokens(chosenOutput.name))))
+        : inputs.some(d => isDuplex(d.name));
+
+      let inId = inputDeviceId;
+      let outId = outputDeviceId;
+      const notes: string[] = [];
+
+      // The CoreAudio output tap captures only silence from a Bluetooth A2DP device,
+      // so capture the system mix via ScreenCaptureKit when the output is a headset.
+      if (outputIsHeadset) { outId = 'sck'; notes.push('system audio -> ScreenCaptureKit'); }
+
+      // Opening a headset mic forces the whole device into HFP, degrading the output
+      // we tap/listen to — only a problem when that headset is ALSO the output.
+      // Reroute to the built-in mic in that case.
+      if (micIsHeadset && outputIsHeadset && builtIn && inId !== builtIn.id) {
+        inId = builtIn.id;
+        notes.push(`mic -> "${builtIn.name}"`);
+      }
+
+      if (notes.length) {
+        console.warn(`[Main] Bluetooth/headset audio reroute (${notes.join('; ')}). inputs=[${inputs.map(d => d.name).join(', ')}] outputs=[${outputs.map(d => d.name).join(', ')}]`);
+      }
+      return { inputDeviceId: inId, outputDeviceId: outId };
+    } catch (e) {
+      console.error('[Main] resolveSafeAudioRouting failed; using requested devices.', e);
+      return { inputDeviceId, outputDeviceId };
+    }
+  }
+
   private async reconfigureAudio(inputDeviceId?: string, outputDeviceId?: string): Promise<void> {
+    // Guard against the macOS Bluetooth headset problem (see resolveSafeAudioRouting).
+    ({ inputDeviceId, outputDeviceId } = this.resolveSafeAudioRouting(inputDeviceId, outputDeviceId));
     console.log(`[Main] Reconfiguring Audio: Input=${inputDeviceId}, Output=${outputDeviceId}`);
 
     // 1. System Audio (Output Capture)
@@ -968,6 +1092,7 @@ export class AppState {
       let _rcfgSysChunkCount = 0;
       this.systemAudioCapture.on('data', (chunk: Buffer) => {
         _rcfgSysChunkCount++;
+        this._systemAudioSeen = true;
         if (_rcfgSysChunkCount <= 3 || _rcfgSysChunkCount % 500 === 0) {
           console.log(`[Main] (Reconfigured) SystemAudio->STT: chunk #${_rcfgSysChunkCount}, ${chunk.length}B, googleSTT=${this.googleSTT ? 'active' : 'NULL'}`);
         }
@@ -995,6 +1120,7 @@ export class AppState {
         let _dfltSysChunkCount = 0;
         this.systemAudioCapture.on('data', (chunk: Buffer) => {
           _dfltSysChunkCount++;
+          this._systemAudioSeen = true;
           if (_dfltSysChunkCount <= 3 || _dfltSysChunkCount % 500 === 0) {
             console.log(`[Main] (Default) SystemAudio->STT: chunk #${_dfltSysChunkCount}, ${chunk.length}B, googleSTT=${this.googleSTT ? 'active' : 'NULL'}`);
           }
@@ -1383,12 +1509,29 @@ export class AppState {
         this.setupSystemAudioPipeline();
 
         // Start System Audio
+        this._systemAudioSeen = false;
         this.systemAudioCapture?.start();
         this.googleSTT?.start();
 
         // Start Microphone
         this.microphoneCapture?.start();
         this.googleSTT_User?.start();
+
+        // Watchdog: if no system-audio chunk arrives within a few seconds, the tap
+        // started but is producing nothing (e.g. SCK silently failed, Screen
+        // Recording revoked, or no audio is actually playing). Surface it instead of
+        // failing silently. Mic-only transcription still works in the meantime.
+        if (this._sysAudioWatchdog) clearTimeout(this._sysAudioWatchdog);
+        this._sysAudioWatchdog = setTimeout(() => {
+          this._sysAudioWatchdog = null;
+          // A live tap emits buffers continuously (even during silence), so "no
+          // chunk at all after 8s" means the capture is genuinely broken, not quiet.
+          if (this.isMeetingActive && this.systemAudioCapture && !this._systemAudioSeen) {
+            const message = 'No system audio detected. The other side may not transcribe. Check Screen Recording permission (System Settings → Privacy & Security → Screen Recording) and that audio is playing to your selected output.';
+            console.warn('[Main]', message);
+            this.broadcast('meeting-audio-error', message);
+          }
+        }, 8000);
 
         // Start JIT RAG live indexing
         if (this.ragManager) {
@@ -1415,6 +1558,7 @@ export class AppState {
   public async endMeeting(): Promise<void> {
     console.log('[Main] Ending Meeting...');
     this.isMeetingActive = false; // Block new data immediately
+    if (this._sysAudioWatchdog) { clearTimeout(this._sysAudioWatchdog); this._sysAudioWatchdog = null; }
     this.broadcastMeetingState();
 
     // The main process owns the window state, so ending a meeting should always
@@ -1563,18 +1707,18 @@ export class AppState {
       helper.getOverlayWindow()?.webContents.send('intelligence-assist-update', { insight });
     })
 
-    this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number) => {
+    this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number, streamId?: number) => {
       const win = mainWindow()
       if (win) {
-        win.webContents.send('intelligence-suggested-answer', { answer, question, confidence })
+        win.webContents.send('intelligence-suggested-answer', { answer, question, confidence, streamId })
       }
 
     })
 
-    this.intelligenceManager.on('suggested_answer_token', (token: string, question: string, confidence: number) => {
+    this.intelligenceManager.on('suggested_answer_token', (token: string, question: string, confidence: number, streamId?: number) => {
       const win = mainWindow()
       if (win) {
-        win.webContents.send('intelligence-suggested-answer-token', { token, question, confidence })
+        win.webContents.send('intelligence-suggested-answer-token', { token, question, confidence, streamId })
       }
     })
 

@@ -23,14 +23,26 @@ export class WhatToAnswerLLM {
         cleanedTranscript: string,
         temporalContext?: TemporalContext,
         intentResult?: IntentResult,
-        imagePaths?: string[]
+        imagePaths?: string[],
+        focalQuestion?: string
     ): AsyncGenerator<string> {
         try {
             // Build a rich message context
-            // Note: We can't easily inject the complex temporal/intent logic into universal prompt *variables* 
+            // Note: We can't easily inject the complex temporal/intent logic into universal prompt *variables*
             // but we can prepend it to the message.
 
             let contextParts: string[] = [];
+
+            // Anchor the answer on the interviewer's most recent question. Without
+            // this, when the transcript trails off on the candidate's own filler
+            // (e.g. "Hello?"), the model latches onto that and replies "I missed the
+            // question, please repeat" instead of answering the actual question.
+            if (focalQuestion && focalQuestion.trim().length > 0) {
+                contextParts.push(`<question_to_answer>
+The interviewer's most recent question — answer THIS directly: "${focalQuestion.trim()}"
+Ignore any of the candidate's (ME) own short interjections such as greetings or "hello"; those are not the question. If the question text looks slightly truncated, answer the clear intent of it rather than asking them to repeat.
+</question_to_answer>`);
+            }
 
             if (intentResult) {
                 contextParts.push(`<intent_and_shape>

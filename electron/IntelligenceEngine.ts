@@ -40,8 +40,8 @@ function detectRefinementIntent(userText: string): { isRefinement: boolean; inte
 // Events emitted by IntelligenceEngine
 export interface IntelligenceModeEvents {
     'assist_update': (insight: string) => void;
-    'suggested_answer': (answer: string, question: string, confidence: number) => void;
-    'suggested_answer_token': (token: string, question: string, confidence: number) => void;
+    'suggested_answer': (answer: string, question: string, confidence: number, streamId?: number) => void;
+    'suggested_answer_token': (token: string, question: string, confidence: number, streamId?: number) => void;
     'refined_answer': (answer: string, intent: string) => void;
     'refined_answer_token': (token: string, intent: string) => void;
     'recap': (summary: string) => void;
@@ -287,20 +287,40 @@ export class IntelligenceEngine extends EventEmitter {
                 180
             );
 
-            const lastInterviewerTurn = this.session.getLastInterviewerTurn();
+            // Classify intent on the SAME latest question the transcript above was
+            // built from. getLastInterviewerTurn() only sees finalized turns, so while
+            // the interviewer is still mid-sentence it returns the PREVIOUS question —
+            // the prompt then answers the current question with the wrong intent shape,
+            // which reads as an irrelevant response. Prefer the fresh interim turn.
+            const lastInterviewerTurn = (lastInterim && lastInterim.text.trim().length > 0)
+                ? lastInterim.text
+                : this.session.getLastInterviewerTurn();
+
+            // Claim the generation id BEFORE the classifyIntent await. Otherwise a
+            // slow classify (cold zero-shot model) lets a newer request start and
+            // then this stale one increments currentGenerationId afterwards,
+            // wrongly aborting the newer request.
+            const generationId = ++this.currentGenerationId;
+
             const intentResult = await classifyIntent(
                 lastInterviewerTurn,
                 preparedTranscript,
                 this.session.getAssistantResponseHistory().length
             );
 
-            console.log(`[IntelligenceEngine] Temporal RAG: ${temporalContext.previousResponses.length} responses, tone: ${temporalContext.toneSignals[0]?.type || 'neutral'}, intent: ${intentResult.intent}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
+            // A newer generation may have started while classifyIntent awaited.
+            if (this.currentGenerationId !== generationId) {
+                console.log('[IntelligenceEngine] _what_to_say superseded during intent classification');
+                return null;
+            }
 
-            const generationId = ++this.currentGenerationId;
+            console.log(`[IntelligenceEngine] Temporal RAG: ${temporalContext.previousResponses.length} responses, tone: ${temporalContext.toneSignals[0]?.type || 'neutral'}, intent: ${intentResult.intent}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
             let fullAnswer = "";
             // RC-03 fix: hold a reference to the generator so we can call .return()
             // to properly terminate the network request when a new generation starts.
-            const stream = this.whatToAnswerLLM.generateStream(preparedTranscript, temporalContext, intentResult, imagePaths);
+            // Pass the last interviewer turn as the focal question so the answer
+            // anchors on the actual question, not on trailing candidate filler.
+            const stream = this.whatToAnswerLLM.generateStream(preparedTranscript, temporalContext, intentResult, imagePaths, lastInterviewerTurn ?? undefined);
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -312,13 +332,13 @@ export class IntelligenceEngine extends EventEmitter {
                     streamAborted = true;
                     break;
                 }
-                this.emit('suggested_answer_token', token, question || 'inferred', confidence);
+                this.emit('suggested_answer_token', token, question || 'inferred', confidence, generationId);
                 fullAnswer += token;
             }
 
             if (streamAborted) {
-                // Aborted mid-stream — don't update session or emit final event
-                this.setMode('idle');
+                // Superseded by a newer generation — that generation now owns the
+                // mode, so do NOT setMode('idle') here (it would clear the newer one).
                 return null;
             }
 
@@ -337,7 +357,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             // CQ-05 fix: only emit the "complete" event after a non-aborted stream.
             // The renderer already has all tokens — this is for metadata only (e.g. copying, history).
-            this.emit('suggested_answer', fullAnswer, question || 'What to Answer', confidence);
+            this.emit('suggested_answer', fullAnswer, question || 'What to Answer', confidence, generationId);
 
             this.setMode('idle');
             return fullAnswer;
@@ -685,6 +705,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             const generationId = ++this.currentGenerationId;
             let fullHint = "";
+            let streamAborted = false;
             const stream = this.codeHintLLM.generateStream(
                 imagePaths,
                 questionContext ?? undefined,
@@ -695,10 +716,19 @@ export class IntelligenceEngine extends EventEmitter {
             for await (const token of stream) {
                 if (this.currentGenerationId !== generationId) {
                     console.log('[IntelligenceEngine] code_hint stream aborted by new generation');
+                    await stream.return?.(undefined);
+                    streamAborted = true;
                     break;
                 }
-                this.emit('suggested_answer_token', token, 'Code Hint', 1.0);
+                this.emit('suggested_answer_token', token, 'Code Hint', 1.0, generationId);
                 fullHint += token;
+            }
+
+            if (streamAborted) {
+                // A newer generation superseded this one — do not persist the partial
+                // hint or emit a final, and do NOT setMode('idle') (the newer
+                // generation owns the mode now).
+                return null;
             }
 
             if (!fullHint || fullHint.trim().length < 5) {
@@ -713,7 +743,7 @@ export class IntelligenceEngine extends EventEmitter {
                 answer: fullHint
             });
 
-            this.emit('suggested_answer', fullHint, 'Code Hint', 1.0);
+            this.emit('suggested_answer', fullHint, 'Code Hint', 1.0, generationId);
             this.setMode('idle');
             return fullHint;
 
@@ -770,12 +800,12 @@ export class IntelligenceEngine extends EventEmitter {
                     streamAborted = true;
                     break;
                 }
-                this.emit('suggested_answer_token', token, 'Brainstorming Approaches', 1.0);
+                this.emit('suggested_answer_token', token, 'Brainstorming Approaches', 1.0, generationId);
                 fullResult += token;
             }
 
             if (streamAborted) {
-                this.setMode('idle');
+                // Superseded — the newer generation owns the mode; don't reset it.
                 return null;
             }
 
@@ -791,7 +821,7 @@ export class IntelligenceEngine extends EventEmitter {
                 answer: fullResult
             });
 
-            this.emit('suggested_answer', fullResult, 'Brainstorming Approaches', 1.0);
+            this.emit('suggested_answer', fullResult, 'Brainstorming Approaches', 1.0, generationId);
             this.setMode('idle');
             return fullResult;
 

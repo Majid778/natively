@@ -64,6 +64,8 @@ export class SessionTracker {
 
     // Track interim interviewer segment
     private lastInterimInterviewer: TranscriptSegment | null = null;
+    private recentlyFlushedInterviewer: TranscriptSegment | null = null;
+    private static readonly FLUSHED_INTERIM_MERGE_WINDOW_MS = 5000;
 
     // Detected coding question from transcript or screenshot extraction
     private detectedCodingQuestion: string | null = null;
@@ -195,6 +197,10 @@ export class SessionTracker {
         const text = segment.text.trim();
 
         if (!text) return null;
+
+        if (this.mergeRecentlyFlushedInterviewer(segment, role, text)) {
+            return null;
+        }
 
         // Deduplicate: check if this exact item already exists
         const lastItem = this.contextItems[this.contextItems.length - 1];
@@ -459,6 +465,7 @@ export class SessionTracker {
             console.log('[SessionTracker] Force-saving pending interim transcript:', this.lastInterimInterviewer.text);
             const finalSegment = { ...this.lastInterimInterviewer, final: true };
             this.addTranscript(finalSegment);
+            this.recentlyFlushedInterviewer = finalSegment;
             this.lastInterimInterviewer = null;
         }
     }
@@ -476,6 +483,7 @@ export class SessionTracker {
         this.lastAssistantMessage = null;
         this.assistantResponseHistory = [];
         this.lastInterimInterviewer = null;
+        this.recentlyFlushedInterviewer = null;
         this.detectedCodingQuestion = null;
         this.codingQuestionSource = null;
         this.codingQuestionSetAt = null;
@@ -490,6 +498,84 @@ export class SessionTracker {
         if (speaker === 'user') return 'user';
         if (speaker === 'assistant') return 'assistant';
         return 'interviewer'; // system audio = interviewer
+    }
+
+    private mergeRecentlyFlushedInterviewer(
+        segment: TranscriptSegment,
+        role: 'interviewer' | 'user' | 'assistant',
+        text: string
+    ): boolean {
+        const flushed = this.recentlyFlushedInterviewer;
+        if (!flushed || role !== 'interviewer' || segment.speaker !== flushed.speaker) return false;
+
+        if (Math.abs(segment.timestamp - flushed.timestamp) > SessionTracker.FLUSHED_INTERIM_MERGE_WINDOW_MS) {
+            this.recentlyFlushedInterviewer = null;
+            return false;
+        }
+
+        const flushedText = flushed.text.trim();
+        if (!this.isSimilarTranscriptText(flushedText, text)) return false;
+
+        const mergedText = text.length >= flushedText.length ? text : flushedText;
+        let contextIndex = -1;
+        for (let i = this.contextItems.length - 1; i >= 0; i--) {
+            const item = this.contextItems[i];
+            if (item.role === role && item.timestamp === flushed.timestamp && item.text === flushedText) {
+                contextIndex = i;
+                break;
+            }
+        }
+        if (contextIndex !== -1) {
+            this.contextItems[contextIndex] = {
+                role,
+                text: mergedText,
+                timestamp: segment.timestamp
+            };
+        }
+
+        let transcriptIndex = -1;
+        for (let i = this.fullTranscript.length - 1; i >= 0; i--) {
+            const item = this.fullTranscript[i];
+            if (item.speaker === flushed.speaker && item.timestamp === flushed.timestamp && item.text.trim() === flushedText) {
+                transcriptIndex = i;
+                break;
+            }
+        }
+        if (transcriptIndex !== -1) {
+            this.fullTranscript[transcriptIndex] = {
+                ...segment,
+                text: mergedText
+            };
+        }
+
+        this.recentlyFlushedInterviewer = null;
+        return true;
+    }
+
+    private isSimilarTranscriptText(a: string, b: string): boolean {
+        const left = this.normalizeTranscriptText(a);
+        const right = this.normalizeTranscriptText(b);
+        if (!left || !right) return false;
+        if (left === right || left.startsWith(right) || right.startsWith(left)) return true;
+
+        const leftWords = new Set(left.split(' '));
+        const rightWords = new Set(right.split(' '));
+        if (Math.min(leftWords.size, rightWords.size) < 3) return false;
+
+        let shared = 0;
+        for (const word of leftWords) {
+            if (rightWords.has(word)) shared++;
+        }
+
+        return shared / Math.max(leftWords.size, rightWords.size) >= 0.85;
+    }
+
+    private normalizeTranscriptText(text: string): string {
+        return text
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, '')
+            .replace(/\s+/g, ' ');
     }
 
     private evictOldEntries(): void {

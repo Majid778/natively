@@ -14,12 +14,12 @@ interface OnboardingProps {
 const TOTAL_STEPS = 6;
 
 const Header: React.FC<{ icon: React.ReactNode; title: string; subtitle?: string }> = ({ icon, title, subtitle }) => (
-  <div className="flex flex-col items-center text-center mb-6">
-    <div className="w-12 h-12 rounded-2xl bg-bg-item-surface border border-border-subtle flex items-center justify-center mb-4 text-accent-primary">
+  <div className="flex flex-col items-center text-center mb-7">
+    <div className="w-14 h-14 rounded-2xl bg-bg-item-surface border border-border-subtle flex items-center justify-center mb-4 text-accent-primary">
       {icon}
     </div>
-    <h1 className="text-xl font-bold text-text-primary">{title}</h1>
-    {subtitle && <p className="text-sm text-text-secondary mt-1.5 leading-relaxed">{subtitle}</p>}
+    <h1 className="text-2xl font-bold text-text-primary">{title}</h1>
+    {subtitle && <p className="text-base text-text-secondary mt-2 leading-relaxed">{subtitle}</p>}
   </div>
 );
 
@@ -273,12 +273,12 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
         ))}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-6 py-4 flex items-start justify-center">
-        <div className="w-full max-w-md">{renderStep()}</div>
+      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-6 py-4 flex items-center justify-center">
+        <div className="w-full max-w-lg">{renderStep()}</div>
       </div>
 
       <div className="px-6 pb-6 pt-2 shrink-0">
-        <div className="w-full max-w-md mx-auto flex items-center gap-2">
+        <div className="w-full max-w-lg mx-auto flex items-center gap-2">
           {step > 0 && (
             <button onClick={back} className="px-3 py-2.5 rounded-xl text-sm font-medium text-text-secondary hover:text-text-primary inline-flex items-center gap-1 transition-colors">
               <ChevronLeft size={16} /> Back

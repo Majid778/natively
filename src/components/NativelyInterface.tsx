@@ -49,6 +49,7 @@ interface Message {
     role: 'user' | 'system' | 'interviewer';
     text: string;
     isStreaming?: boolean;
+    streamId?: number;
     hasScreenshot?: boolean;
     screenshotPreview?: string;
     isCode?: boolean;
@@ -82,6 +83,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const [conversationContext, setConversationContext] = useState<string>('');
     const [isManualRecording, setIsManualRecording] = useState(false);
     const isRecordingRef = useRef(false);  // Ref to track recording state (avoids stale closure)
+    const sessionEpochRef = useRef(0);     // Bumped on session reset; guards deferred work from re-dirtying a new session
+    const latestStreamIdRef = useRef(0);   // Highest AI-answer streamId seen; drop late tokens/finals from superseded streams
     const [manualTranscript, setManualTranscript] = useState('');
     const manualTranscriptRef = useRef<string>('');
     const [showTranscript, setShowTranscript] = useState(() => {
@@ -348,12 +351,22 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         if (!window.electronAPI?.onSessionReset) return;
         const unsubscribe = window.electronAPI.onSessionReset(() => {
             console.log('[NativelyInterface] Resetting session state...');
+            // Bump the epoch first so any deferred timers from the prior session
+            // (e.g. the 3s interviewer-speaking reset) no-op instead of re-dirtying
+            // the fresh session's HUD.
+            sessionEpochRef.current += 1;
             setMessages([]);
             setInputValue('');
             setAttachedContext([]);
             setManualTranscript('');
             setVoiceInput('');
             setIsProcessing(false);
+            // The overlay window is hidden, not destroyed, so React state survives
+            // between meetings. Clear the rolling transcript HUD too, otherwise the
+            // previous session's text stays visible when a new meeting starts.
+            setRollingTranscript('');
+            setPartialTranscript('');
+            setIsInterviewerSpeaking(false);
             // Optionally reset connection status if needed, but connection persists
 
             // Track new conversation/session if applicable?
@@ -425,7 +438,12 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             if (transcript.final) {
                 setRollingTranscript(prev => prev + (prev ? '  ·  ' : '') + transcript.text);
                 setPartialTranscript('');
-                setTimeout(() => setIsInterviewerSpeaking(false), 3000);
+                // Capture the epoch so a session reset before this fires can't flip
+                // the new session's HUD state.
+                const epoch = sessionEpochRef.current;
+                setTimeout(() => {
+                    if (sessionEpochRef.current === epoch) setIsInterviewerSpeaking(false);
+                }, 3000);
             } else {
                 setPartialTranscript(transcript.text);
             }
@@ -458,12 +476,20 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
 
 
         cleanups.push(window.electronAPI.onIntelligenceSuggestedAnswerToken((data) => {
-            // Progressive update for 'what_to_answer' mode
+            // Drop late tokens from a superseded (older) stream — streamId is
+            // monotonic, so anything below the highest seen is stale.
+            if (data.streamId !== undefined) {
+                if (data.streamId < latestStreamIdRef.current) return;
+                latestStreamIdRef.current = data.streamId;
+            }
+            // Progressive update keyed by streamId so tokens from different
+            // generations/modes (what-to-answer, code-hint, brainstorm — all share
+            // this channel) never splice into one another's message.
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
 
-                // If we already have a streaming message for this intent, append
-                if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'what_to_answer') {
+                // Append only if the last message is the SAME stream still streaming.
+                if (lastMsg && lastMsg.isStreaming && lastMsg.streamId === data.streamId) {
                     const updated = [...prev];
                     updated[prev.length - 1] = {
                         ...lastMsg,
@@ -472,28 +498,33 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     return updated;
                 }
 
-                // Otherwise, start a new one (First token)
-                return [...prev, {
+                // A new/different stream: close out any still-open stream, then start fresh.
+                const closed = prev.map(m => m.isStreaming ? { ...m, isStreaming: false } : m);
+                return [...closed, {
                     id: Date.now().toString(),
                     role: 'system',
                     text: data.token,
                     intent: 'what_to_answer',
-                    isStreaming: true
+                    isStreaming: true,
+                    streamId: data.streamId
                 }];
             });
         }));
 
         cleanups.push(window.electronAPI.onIntelligenceSuggestedAnswer((data) => {
+            // Ignore a final from a superseded (older) stream.
+            if (data.streamId !== undefined && data.streamId < latestStreamIdRef.current) return;
             setIsProcessing(false);
             setMessages(prev => {
-                const lastMsg = prev[prev.length - 1];
+                // Finalize the streaming message belonging to THIS stream.
+                const idx = data.streamId !== undefined
+                    ? prev.findIndex(m => m.isStreaming && m.streamId === data.streamId)
+                    : prev.findIndex((m, i) => i === prev.length - 1 && m.isStreaming && m.intent === 'what_to_answer');
 
-                // If we were streaming, finalize it
-                if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'what_to_answer') {
-                    // Start new array to avoid mutation
+                if (idx >= 0) {
                     const updated = [...prev];
-                    updated[prev.length - 1] = {
-                        ...lastMsg,
+                    updated[idx] = {
+                        ...updated[idx],
                         text: data.answer, // Ensure final consistency
                         isStreaming: false
                     };

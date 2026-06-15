@@ -25,6 +25,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
     private shouldReconnect = false;
 
     private sampleRate = 16000;
+    private socketSampleRate: number | null = null;
     private numChannels = 1;
     private languageCode = 'en'; // Default to English
 
@@ -118,6 +119,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
         this.clearKeepAlive();
         const ws = this.ws;
         this.ws = null;
+        this.socketSampleRate = null;
         this.isConnecting = false;
         if (!ws) return;
         ws.removeAllListeners();
@@ -157,7 +159,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
     public write(chunk: Buffer): void {
         if (!this.isActive) return;
 
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.socketSampleRate !== this.sampleRate) {
             this.buffer.push(chunk);
             if (this.buffer.length > 500) this.buffer.shift(); // Cap buffer size
             
@@ -178,26 +180,33 @@ export class DeepgramStreamingSTT extends EventEmitter {
     private connect(): void {
         if (this.isConnecting) return;
         this.isConnecting = true;
+        const connectionSampleRate = this.sampleRate;
 
         const url =
             `wss://api.deepgram.com/v2/listen` +
             `?model=${encodeURIComponent(DEEPGRAM_FLUX_MODEL)}` +
             `&encoding=linear16` +
-            `&sample_rate=${this.sampleRate}`;
+            `&sample_rate=${connectionSampleRate}`;
 
-        console.log(`[DeepgramStreaming] Connecting (rate=${this.sampleRate}, ch=${this.numChannels})...`);
+        console.log(`[DeepgramStreaming] Connecting (rate=${connectionSampleRate}, ch=${this.numChannels})...`);
 
         this.ws = new WebSocket(url, {
             headers: {
                 Authorization: `Token ${this.apiKey}`,
             },
         });
+        this.socketSampleRate = connectionSampleRate;
 
         this.ws.on('open', () => {
             this.isActive = true;
             this.isConnecting = false;
             this.reconnectAttempts = 0;
             console.log('[DeepgramStreaming] Connected');
+
+            if (this.socketSampleRate !== this.sampleRate) {
+                console.log('[DeepgramStreaming] Connected socket has stale sample rate; buffering until restart');
+                return;
+            }
 
             // Send buffered audio
             while (this.buffer.length > 0) {

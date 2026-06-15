@@ -150,7 +150,22 @@ export function prepareTranscriptForWhatToAnswer(
     turns: TranscriptTurn[],
     maxTurns: number = 12
 ): string {
-    const cleaned = cleanTranscript(turns);
+    // The candidate is answering the interviewer's most recent question, so the
+    // transcript should END on that question. Drop only trailing candidate ('user')
+    // turns that are SHORT FILLER (e.g. "Hello?", "yeah", "ok") so the model doesn't
+    // latch onto them — but KEEP a substantive in-progress answer (so the model can
+    // continue it), and only trim if an interviewer turn remains to anchor on.
+    let scoped = turns;
+    if (turns.some(t => t.role === 'interviewer')) {
+        const isFiller = (t: TranscriptTurn) => {
+            const words = t.text.trim().split(/\s+/).filter(Boolean);
+            return words.length <= 4; // greetings / acknowledgements / "hello? hello?"
+        };
+        let end = turns.length;
+        while (end > 0 && turns[end - 1].role === 'user' && isFiller(turns[end - 1])) end--;
+        if (end > 0) scoped = turns.slice(0, end);
+    }
+    const cleaned = cleanTranscript(scoped);
     const sparsified = sparsifyTranscript(cleaned, maxTurns);
     return formatTranscriptForLLM(sparsified);
 }
