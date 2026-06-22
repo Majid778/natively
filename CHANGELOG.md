@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0-oss-beta.10] - 2026-06-22
+
+### Changed
+
+- **Dead-code cleanup (~2,850 LOC).** Removed the unused legacy `_pages` flow (Queue/Solutions/Debug + components, `ui/ModelSelector`, `types/solutions`) that nothing imported, and deleted `scripts/VectorStoreRebuild.js` — an unreferenced generator that could overwrite the maintained `electron/rag/VectorStore.ts` from a stale template. Corrected the `preload.ts` `takeScreenshot` return type to its real `{ path, preview }` contract. No runtime behavior change.
+
+
 ## [2.2.0-oss-beta.4] - 2026-06-12
 
 ### Fixed
